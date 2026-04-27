@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { Model } from "@rs-map-viewer/rs/model/Model";
 import { ModelData } from "@rs-map-viewer/rs/model/ModelData";
 import { HSL_RGB_MAP } from "@rs-map-viewer/rs/util/ColorUtil";
-import { MapViewer } from "@rs-map-viewer/mapviewer/MapViewer";
+import { MapViewer } from "../lib/mapviewer/MapViewer";
 
 const DUKE_HORACIO_NPC_IDS = [815, 741];
 

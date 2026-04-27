@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { ObjModelLoader } from "@rs-map-viewer/rs/config/objtype/ObjModelLoader";
 import { HSL_RGB_MAP } from "@rs-map-viewer/rs/util/ColorUtil";
-import { MapViewer } from "@rs-map-viewer/mapviewer/MapViewer";
+import { MapViewer } from "../lib/mapviewer/MapViewer";
 
 const CANNON_OBJECT_ID = 32204;
 

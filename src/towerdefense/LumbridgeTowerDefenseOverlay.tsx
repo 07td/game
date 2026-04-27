@@ -1,8 +1,8 @@
 import { vec4 } from "gl-matrix";
-import { Fragment, MouseEvent, useEffect, useRef, useState } from "react";
+import { MouseEvent, useEffect, useRef, useState } from "react";
 
-import { MapViewer } from "@rs-map-viewer/mapviewer/MapViewer";
-import { WebGLMapSquare } from "@rs-map-viewer/mapviewer/webgl/WebGLMapSquare";
+import { MapViewer } from "../lib/mapviewer/MapViewer";
+import { WebGLMapSquare } from "../lib/mapviewer/webgl/WebGLMapSquare";
 import { DukeHoracioChatHeadCanvas } from "./DukeHoracioChatHeadCanvas";
 import coinsIcon from "./coins-100.png";
 import "./LumbridgeTowerDefenseOverlay.css";
@@ -740,7 +740,10 @@ export function LumbridgeTowerDefenseOverlay({
                                     const marker = routeDraftPoints[index];
                                     const tileSize = 100 / 64;
                                     return (
-                                        <Fragment key={`${point.x}-${point.y}-${index}`}>
+                                        <div
+                                            key={`${point.x}-${point.y}-${index}`}
+                                            style={{ display: "contents" }}
+                                        >
                                             <div
                                                 className={`td-route-tile ${
                                                     state.waveInProgress ? "active" : "idle"
@@ -761,7 +764,7 @@ export function LumbridgeTowerDefenseOverlay({
                                             >
                                                 <span>{index + 1}</span>
                                             </div>
-                                        </Fragment>
+                                        </div>
                                     );
                                 })}
                             </div>

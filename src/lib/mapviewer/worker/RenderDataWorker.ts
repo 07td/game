@@ -337,7 +337,7 @@ const worker = {
                 const pixels = textureLoader.getPixelsArgb(id, textureSize, true, 1.0);
 
                 const canvas = new OffscreenCanvas(textureSize, textureSize);
-                const ctx = canvas.getContext("2d")!;
+                const ctx = canvas.getContext("2d") as unknown as CanvasRenderingContext2D;
 
                 const imageData = ctx.createImageData(textureSize, textureSize);
 
@@ -387,7 +387,7 @@ async function initCachedMapImage(
 }
 
 async function offscreenCanvasToPng(canvas: OffscreenCanvas): Promise<string> {
-    const blob = await canvas.convertToBlob({ type: "image/png" });
+    const blob = await (canvas as any).convertToBlob({ type: "image/png" });
 
     const reader = new FileReader();
 

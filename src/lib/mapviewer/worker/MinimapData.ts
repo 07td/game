@@ -28,7 +28,7 @@ export async function loadMinimapBlob(
     const widthExclBorder = (scene.sizeX - borderSize * 2) * 4;
     const heightExclBorder = (scene.sizeY - borderSize * 2) * 4;
     const canvas = new OffscreenCanvas(widthExclBorder, heightExclBorder);
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d") as CanvasRenderingContext2D | null;
     if (!ctx) {
         throw new Error("Could not get canvas context");
     }
@@ -40,5 +40,5 @@ export async function loadMinimapBlob(
 
     ctx.putImageData(imageData, -borderSize * 4, -borderSize * 4);
 
-    return canvas.convertToBlob();
+    return (canvas as any).convertToBlob();
 }

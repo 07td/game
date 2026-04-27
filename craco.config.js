@@ -1,4 +1,5 @@
 const { when, whenDev, addBeforeLoader, loaderByName } = require("@craco/craco");
+const path = require("path");
 
 const ThreadsPlugin = require("threads-plugin");
 const JsonMinimizerPlugin = require("json-minimizer-webpack-plugin");
@@ -35,6 +36,12 @@ module.exports = {
 
             webpackConfig.resolve.fallback = {
                 fs: false,
+            };
+            webpackConfig.resolve.alias = {
+                ...webpackConfig.resolve.alias,
+                "@rs-map-viewer/mapviewer": path.resolve(__dirname, "src/lib/mapviewer"),
+                "@rs-map-viewer/rs": path.resolve(__dirname, "src/rs"),
+                "@rs-map-viewer/towerdefense": path.resolve(__dirname, "src/towerdefense"),
             };
 
             webpackConfig.resolve.extensions = [".web.js", ...webpackConfig.resolve.extensions];

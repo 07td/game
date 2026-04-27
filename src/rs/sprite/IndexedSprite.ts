@@ -150,7 +150,7 @@ export class IndexedSprite {
     getCanvas(): OffscreenCanvas {
         const canvas = new OffscreenCanvas(this.width, this.height);
 
-        const ctx = canvas.getContext("2d")!;
+        const ctx = canvas.getContext("2d") as unknown as CanvasRenderingContext2D;
         const imageData = ctx.createImageData(this.width, this.height);
 
         for (let i = 0; i < this.pixels.length; i++) {

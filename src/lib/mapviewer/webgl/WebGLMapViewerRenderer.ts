@@ -38,14 +38,14 @@ import {
     LumbridgeTdEnemySpawnDetail,
     LumbridgeTdEnemyUpdateDetail,
     LumbridgeTdTowerState,
-} from "../td/lumbridgeTdEvents";
+} from "@rs-map-viewer/towerdefense/lumbridgeTdEvents";
 import {
     LUMBRIDGE_TD_MAP_X,
     LUMBRIDGE_TD_MAP_Y,
     LUMBRIDGE_TD_ROUTE_CHANGED,
     LumbridgeTdRoutePoint,
     getLumbridgeTdRoute,
-} from "../td/lumbridgeTdRoute";
+} from "@rs-map-viewer/towerdefense/lumbridgeTdRoute";
 import { AnimationFrames } from "./AnimationFrames";
 import { DrawRange, NULL_DRAW_RANGE } from "./DrawRange";
 import { InteractType } from "./InteractType";

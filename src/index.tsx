@@ -3,7 +3,8 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
 import "./index.css";
-import MapViewerApp from "./mapviewer/MapViewerApp";
+import MapViewerApp from "./lib/mapviewer/MapViewerApp";
+import { TowerDefenseApp } from "./towerdefense/TowerDefenseApp";
 import reportWebVitals from "./reportWebVitals";
 import { Bzip2 } from "./rs/compression/Bzip2";
 import { Gzip } from "./rs/compression/Gzip";
@@ -20,10 +21,11 @@ window.wallpaperPropertyListener = {
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+const isTowerDefenseMode = process.env.REACT_APP_TD === "1";
 root.render(
     // <React.StrictMode>
     <BrowserRouter>
-        <MapViewerApp />
+        {isTowerDefenseMode ? <TowerDefenseApp /> : <MapViewerApp />}
     </BrowserRouter>,
     // </React.StrictMode>,
 );

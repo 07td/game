@@ -28,6 +28,12 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx"
+    "baseUrl": ".",
+    "paths": {
+      "@rs-map-viewer/mapviewer/*": ["src/lib/mapviewer/*"],
+      "@rs-map-viewer/rs/*": ["src/rs/*"],
+      "@rs-map-viewer/towerdefense/*": ["src/towerdefense/*"]
+    }
   },
   "include": [
     "src", "scripts"

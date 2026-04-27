@@ -3,6 +3,8 @@ import Select, { GroupBase, OptionProps, Props, components, createFilter } from 
 
 import "./OsrsSelect.css";
 
+const SelectComponent = Select as any;
+
 function OsrsSelectOption<Option, IsMulti extends boolean, Group extends GroupBase<Option>>({
     children,
     ...props
@@ -18,7 +20,7 @@ export const OsrsSelect = memo(function OsrsSelect<
     Group extends GroupBase<Option> = GroupBase<Option>,
 >(props: Props<Option, IsMulti, Group>) {
     return (
-        <Select
+        <SelectComponent
             {...props}
             menuPlacement="auto"
             placeholder="Search"
@@ -29,18 +31,18 @@ export const OsrsSelect = memo(function OsrsSelect<
                 Option: OsrsSelectOption,
             }}
             classNames={{
-                container: (state) => "osrs-select-container",
-                control: (state) => "osrs-select-control",
-                valueContainer: (state) => "osrs-select-value-container",
-                input: (state) => "osrs-select-input",
-                singleValue: (state) => "osrs-select-single-value",
-                placeholder: (state) => "osrs-select-placeholder",
-                menu: (state) => "osrs-select-menu",
-                menuList: (state) => "osrs-select-menu-list",
-                option: (state) => "osrs-select-option",
-                noOptionsMessage: (state) => "osrs-select-no-options-message",
+                container: (_state: any) => "osrs-select-container",
+                control: (_state: any) => "osrs-select-control",
+                valueContainer: (_state: any) => "osrs-select-value-container",
+                input: (_state: any) => "osrs-select-input",
+                singleValue: (_state: any) => "osrs-select-single-value",
+                placeholder: (_state: any) => "osrs-select-placeholder",
+                menu: (_state: any) => "osrs-select-menu",
+                menuList: (_state: any) => "osrs-select-menu-list",
+                option: (_state: any) => "osrs-select-option",
+                noOptionsMessage: (_state: any) => "osrs-select-no-options-message",
             }}
-            theme={(theme) => ({
+            theme={(theme: any) => ({
                 ...theme,
                 borderRadius: 0,
                 colors: {

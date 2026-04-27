@@ -40,7 +40,7 @@ export function OsrsMenu({
     entries,
     tooltip,
     debugId,
-}: OsrsMenuProps): JSX.Element | undefined {
+}: OsrsMenuProps): JSX.Element | null {
     const [realX, setX] = useState(x);
     const [realY, setY] = useState(y);
 
@@ -106,7 +106,7 @@ export function OsrsMenu({
                 entry.option !== "Cancel",
         );
         if (entries.length === 0) {
-            return undefined;
+            return null;
         }
         entries.length = 1;
     }

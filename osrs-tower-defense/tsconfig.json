@@ -1,13 +1,14 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    "target": "ES2020",
     "lib": [
-      "dom",
-      "dom.iterable",
-      "es6"
+        "dom",
+        "dom.iterable",
+        "es2020"
     ],
     "allowJs": true,
     "skipLibCheck": true,
+    "types": ["@webgpu/types"],
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "strict": true,
@@ -17,11 +18,14 @@
     "moduleResolution": "node",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "downlevelIteration": true,
     "noEmit": true,
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "@rs-map-viewer/*": ["../src/*"]
+      "@rs-map-viewer/mapviewer/*": ["../src/lib/mapviewer/*"],
+      "@rs-map-viewer/rs/*": ["../src/rs/*"],
+      "@rs-map-viewer/towerdefense/*": ["../src/towerdefense/*"]
     }
   },
   "include": [
