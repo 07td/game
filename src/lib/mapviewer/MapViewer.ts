@@ -33,7 +33,7 @@ const PINNED_CAMERA_Z_RANGE = 26;
 const PINNED_CAMERA_PITCH_RANGE = 110;
 const PINNED_CAMERA_YAW_RANGE = 220;
 
-const CACHED_MAP_IMAGE_PREFIX = "/map-images/";
+const CACHED_MAP_IMAGE_PREFIX = `${process.env.PUBLIC_URL}/map-images/`;
 const LUMBRIDGE_CASTLE_CAMERA: CameraView = {
     position: vec3.fromValues(3242, -26, 3202),
     pitch: -245,

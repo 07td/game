@@ -106,7 +106,10 @@ async function downloadCaches(count) {
     }
 
     if (totalBytes > 0) {
-        await askQuestion("Downloading ~" + formatBytes(totalBytes) + ". Press enter to continue.");
+        if (process.stdout.isTTY && process.stdin.isTTY) {
+            await askQuestion("Downloading ~" + formatBytes(totalBytes) + ". Press enter to continue.");
+        }
+        rl.close();
     }
 
     for (const cache of cachesToDownload) {
