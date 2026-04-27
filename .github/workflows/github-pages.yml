@@ -36,6 +36,14 @@ jobs:
             - name: Install dependencies
               run: npm install --legacy-peer-deps --no-fund --no-audit
 
+            - name: Download cache data
+              run: node scripts/download-caches.js 1
+
+            - name: Stage cache data for Pages
+              run: |
+                  rm -rf public/caches
+                  cp -R caches public/caches
+
             - name: Build site
               run: npm run build
 
