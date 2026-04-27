@@ -2,6 +2,7 @@ const { when, whenDev, addBeforeLoader, loaderByName } = require("@craco/craco")
 const path = require("path");
 
 const ThreadsPlugin = require("threads-plugin");
+const JsonMinimizerPlugin = require("json-minimizer-webpack-plugin");
 
 const express = require("express");
 
@@ -45,14 +46,7 @@ module.exports = {
 
             webpackConfig.resolve.extensions = [".web.js", ...webpackConfig.resolve.extensions];
 
-            if (process.env.DISABLE_JSON_MINIMIZER !== "1") {
-                try {
-                    const JsonMinimizerPlugin = require("json-minimizer-webpack-plugin");
-                    webpackConfig.optimization.minimizer.push(new JsonMinimizerPlugin());
-                } catch (error) {
-                    console.warn("Skipping json minimizer:", error.message);
-                }
-            }
+            webpackConfig.optimization.minimizer.push(new JsonMinimizerPlugin());
 
             return webpackConfig;
         },
