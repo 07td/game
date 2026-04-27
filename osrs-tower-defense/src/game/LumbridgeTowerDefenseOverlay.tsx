@@ -1,8 +1,8 @@
 import { vec4 } from "gl-matrix";
 import { Fragment, MouseEvent, useEffect, useRef, useState } from "react";
 
-import { MapViewer } from "../MapViewer";
-import { WebGLMapSquare } from "../webgl/WebGLMapSquare";
+import { MapViewer } from "@rs-map-viewer/mapviewer/MapViewer";
+import { WebGLMapSquare } from "@rs-map-viewer/mapviewer/webgl/WebGLMapSquare";
 import { DukeHoracioChatHeadCanvas } from "./DukeHoracioChatHeadCanvas";
 import coinsIcon from "./coins-100.png";
 import "./LumbridgeTowerDefenseOverlay.css";

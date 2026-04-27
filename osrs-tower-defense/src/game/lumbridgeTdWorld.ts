@@ -1,7 +1,7 @@
 import { mat4, vec3, vec4 } from "gl-matrix";
 
-import { MapViewer } from "../MapViewer";
-import { WebGLMapSquare } from "../webgl/WebGLMapSquare";
+import { MapViewer } from "@rs-map-viewer/mapviewer/MapViewer";
+import { WebGLMapSquare } from "@rs-map-viewer/mapviewer/webgl/WebGLMapSquare";
 import { TowerPad, WorldPoint } from "./lumbridgeTd";
 import { LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y } from "./lumbridgeTdRoute";
 

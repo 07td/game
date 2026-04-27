@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
 
-import { ObjModelLoader } from "../../rs/config/objtype/ObjModelLoader";
-import { ObjType } from "../../rs/config/objtype/ObjType";
-import { Model } from "../../rs/model/Model";
-import { HSL_RGB_MAP } from "../../rs/util/ColorUtil";
-import { MapViewer } from "../MapViewer";
+import { ObjModelLoader } from "@rs-map-viewer/rs/config/objtype/ObjModelLoader";
+import { ObjType } from "@rs-map-viewer/rs/config/objtype/ObjType";
+import { Model } from "@rs-map-viewer/rs/model/Model";
+import { HSL_RGB_MAP } from "@rs-map-viewer/rs/util/ColorUtil";
+import { MapViewer } from "@rs-map-viewer/mapviewer/MapViewer";
 
 type TdLootItemCanvasProps = {
     mapViewer: MapViewer;
@@ -286,7 +286,7 @@ function drawLootModel(
     const yaw = objType.yan2d * (Math.PI / 1024);
     const pitch = objType.xan2d * (Math.PI / 1024);
     const roll = objType.zan2d * (Math.PI / 1024);
-    const scale = (Math.min(width, height) * 0.68 * (objType.zoom2d / 2000)) / maxExtent;
+    const scale = (Math.min(width, height) * 2.25 * (objType.zoom2d / 2000)) / maxExtent;
 
     const vertices: ProjectedPoint[] = new Array(model.verticesCount);
     for (let i = 0; i < model.verticesCount; i++) {
@@ -302,8 +302,8 @@ function drawLootModel(
         const rolled = rotatePoint3d(rotated, 0, 0, roll);
         const perspective = 1 / Math.max(0.4, 1 + rolled.z / 520);
         vertices[i] = {
-            x: width * 0.5 + rolled.x * scale * perspective + objType.offsetX2d,
-            y: height * 0.66 + rolled.y * scale * perspective - objType.offsetY2d,
+            x: width * 0.5 + rolled.x * scale * perspective + objType.offsetX2d + 0.5,
+            y: height * 0.64 + rolled.y * scale * perspective - objType.offsetY2d - 0.5,
             z: rolled.z,
         };
     }

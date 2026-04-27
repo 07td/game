@@ -3,7 +3,12 @@
     "allow": [
       "Bash(git log --oneline -5)",
       "Bash(git remote set-url origin git@github.com:jessemcbride/osrs-tower-defense.git)",
-      "Bash(git add .)"
+      "Bash(git add .)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nAdd OSRS Tower Defense game implementation\n\n- Implement complete tower defense game set in Lumbridge\n- Add 6 enemy types with authentic OSRS creatures\n- Add 3 tower types: Crossbow, Wizard, and Cannon towers\n- Add comprehensive game mechanics: waves, economy, lives system\n- Add pinned camera view for focused gameplay experience\n- Add 3D model rendering for cannons and Duke Horacio chat head\n- Add complete UI overlay with game controls and stats\n- Add enemy pathfinding and tower placement system\n- Add authentic OSRS styling and assets\n\n🤖 Generated with [Claude Code](https://claude.ai/code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git push -u origin master)",
+      "Bash(mkdir -p osrs-tower-defense/src/game osrs-tower-defense/src/components osrs-tower-defense/public osrs-tower-defense/assets)",
+      "Bash(git checkout HEAD -- src/mapviewer/MapViewer.ts src/mapviewer/MapViewerContainer.css src/mapviewer/MapViewerContainer.tsx src/mapviewer/MapViewerRenderer.ts)",
+      "Bash(git add -A)"
     ],
     "deny": [],
     "ask": []

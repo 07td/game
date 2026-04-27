@@ -1,10 +1,17 @@
 # OSRS Tower Defense
 
-A tower defense game built on top of the open-source RuneScape Map Viewer, featuring authentic OSRS locations, enemies, and gameplay mechanics.
+A tower defense game built using the rs-map-viewer as a library, featuring authentic OSRS locations, enemies, and gameplay mechanics.
+
+## Quick Start
+
+1. Make sure the parent `rs-map-viewer` project is set up with caches
+2. Install dependencies: `yarn install`  
+3. Start the game: `yarn start`
+4. Navigate to http://localhost:3000
 
 ## Overview
 
-This project extends the existing RuneScape Map Viewer to create an immersive tower defense experience set in the world of Old School RuneScape. Players defend strategic locations like Lumbridge by placing towers and fighting waves of classic OSRS enemies.
+This standalone project uses the rs-map-viewer as a library to create an immersive tower defense experience set in the world of Old School RuneScape. Players defend strategic locations like Lumbridge by placing towers and fighting waves of classic OSRS enemies.
 
 ## Game Features
 

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef } from "react";
 
-import { Model } from "../../rs/model/Model";
-import { ModelData } from "../../rs/model/ModelData";
-import { HSL_RGB_MAP } from "../../rs/util/ColorUtil";
-import { MapViewer } from "../MapViewer";
+import { Model } from "@rs-map-viewer/rs/model/Model";
+import { ModelData } from "@rs-map-viewer/rs/model/ModelData";
+import { HSL_RGB_MAP } from "@rs-map-viewer/rs/util/ColorUtil";
+import { MapViewer } from "@rs-map-viewer/mapviewer/MapViewer";
 
 const DUKE_HORACIO_NPC_IDS = [815, 741];
 
