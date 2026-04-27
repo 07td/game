@@ -83,9 +83,14 @@ async function downloadCaches(count, cacheName) {
     const cachesToDownload = [];
     let totalBytes = 0;
 
-    const cachesToConsider = cacheName
+    let cachesToConsider = cacheName
         ? caches.filter((cache) => getCacheDir(cache).replace(/\/$/, "") === cacheName)
         : caches.slice(0, count);
+
+    if (cacheName && cachesToConsider.length === 0) {
+        console.warn(`Cache not found: ${cacheName}, falling back to newest valid cache`);
+        cachesToConsider = caches.slice(0, count);
+    }
 
     for (const cache of cachesToConsider) {
         const cacheDir = getCacheDir(cache);
@@ -106,10 +111,6 @@ async function downloadCaches(count, cacheName) {
             cachesToDownload.push(cache);
             totalBytes += cache.size;
         }
-    }
-
-    if (cacheName && cachesToConsider.length === 0) {
-        throw new Error(`Cache not found: ${cacheName}`);
     }
 
     if (totalBytes > 0) {
