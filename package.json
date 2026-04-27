@@ -2,6 +2,7 @@
   "name": "rs-map-viewer",
   "version": "0.1.0",
   "private": true,
+  "homepage": "https://jessemcbride.github.io/osrs-tower-defense",
   "dependencies": {
     "@foxglove/wasm-bz2": "^0.1.1",
     "@testing-library/jest-dom": "^5.14.1",
