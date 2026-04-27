@@ -187,7 +187,9 @@ export class InputManager {
         if (event.button !== 0 || !this.element) {
             return;
         }
-        const [x, y] = getMousePos(this.element, event);
+        const mousePos = getMousePos(this.element, event);
+        const x = mousePos[0];
+        const y = mousePos[1];
         this.dragX = x;
         this.dragY = y;
         this.mouseX = x;
@@ -198,7 +200,9 @@ export class InputManager {
         if (!this.element) {
             return;
         }
-        const [x, y] = getMousePos(this.element, event);
+        const mousePos = getMousePos(this.element, event);
+        const x = mousePos[0];
+        const y = mousePos[1];
         this.mouseX = x;
         this.mouseY = y;
 
@@ -222,7 +226,9 @@ export class InputManager {
         if (!this.element) {
             return;
         }
-        const [x, y] = getMousePos(this.element, event.touches[0]);
+        const mousePos = getMousePos(this.element, event.touches[0]);
+        const x = mousePos[0];
+        const y = mousePos[1];
         this.dragX = x;
         this.dragY = y;
         this.mouseX = x;
@@ -234,7 +240,9 @@ export class InputManager {
         if (!this.element) {
             return;
         }
-        const [x, y] = getMousePos(this.element, event.touches[0]);
+        const mousePos = getMousePos(this.element, event.touches[0]);
+        const x = mousePos[0];
+        const y = mousePos[1];
         this.mouseX = x;
         this.mouseY = y;
     };
@@ -249,7 +257,9 @@ export class InputManager {
             return;
         }
         event.preventDefault();
-        const [x, y] = getMousePos(this.element, event);
+        const mousePos = getMousePos(this.element, event);
+        const x = mousePos[0];
+        const y = mousePos[1];
         this.pickX = x;
         this.pickY = y;
     };

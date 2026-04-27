@@ -46,9 +46,16 @@ export type Tower = {
     id: string;
     padId: string;
     kind: TowerKind;
+    level: number;
     rotation: number;
     cooldownRemainingMs: number;
     world: WorldPoint;
+};
+
+export type TowerStats = {
+    damage: number;
+    cooldownMs: number;
+    range: number;
 };
 
 export type Enemy = {
@@ -95,6 +102,20 @@ export type WaveSummary = {
     totalValue: number;
 };
 
+export type WaveEnemyConfig = {
+    archetypeName: string;
+    count: number;
+    hpMultiplier: number;
+    speedMultiplier: number;
+    rewardMultiplier: number;
+};
+
+export type WaveConfig = {
+    wave: number;
+    spawnIntervalMs: number;
+    enemies: WaveEnemyConfig[];
+};
+
 export type LumbridgeTdState = {
     wave: number;
     gold: number;
@@ -113,6 +134,9 @@ export type LumbridgeTdState = {
     showWaveSummary: boolean;
     selectedEnemy: Enemy | null;
     showEnemyInfo: boolean;
+    selectedTowerId: string | null;
+    showTowerInfo: boolean;
+    waveConfigs: Record<number, WaveConfig>;
 };
 
 const LOOT_TABLES: Record<string, LootItem[]> = {
@@ -205,6 +229,94 @@ function getWaveArchetypes(wave: number): EnemyArchetype[] {
     ];
 }
 
+export function createDefaultWaveConfig(wave: number): WaveConfig {
+    const waveArchetypes = getWaveArchetypes(wave);
+    const totalCount = 5 + wave * 2;
+    const enemies = waveArchetypes.map((archetype) => ({
+        archetypeName: archetype.name,
+        count: 0,
+        hpMultiplier: 1,
+        speedMultiplier: 1,
+        rewardMultiplier: 1,
+    }));
+
+    for (let index = 0; index < totalCount; index++) {
+        enemies[index % enemies.length].count++;
+    }
+
+    return {
+        wave,
+        spawnIntervalMs: Math.max(320, 900 - wave * 35),
+        enemies,
+    };
+}
+
+export function getWaveConfig(state: LumbridgeTdState, wave: number): WaveConfig {
+    return state.waveConfigs[wave] ?? createDefaultWaveConfig(wave);
+}
+
+export function getWaveEnemyCount(config: WaveConfig): number {
+    return config.enemies.reduce((sum, enemy) => sum + enemy.count, 0);
+}
+
+export function updateWaveConfig(
+    state: LumbridgeTdState,
+    wave: number,
+    config: WaveConfig,
+): LumbridgeTdState {
+    const sanitizedConfig = sanitizeWaveConfig({ ...config, wave });
+    return {
+        ...state,
+        waveConfigs: {
+            ...state.waveConfigs,
+            [wave]: sanitizedConfig,
+        },
+    };
+}
+
+export function resetWaveConfig(state: LumbridgeTdState, wave: number): LumbridgeTdState {
+    const nextWaveConfigs = { ...state.waveConfigs };
+    delete nextWaveConfigs[wave];
+    return {
+        ...state,
+        waveConfigs: nextWaveConfigs,
+    };
+}
+
+function sanitizeWaveConfig(config: WaveConfig): WaveConfig {
+    const seen = new Set<string>();
+    const enemies = config.enemies
+        .map((enemy) => ({
+            archetypeName: enemy.archetypeName,
+            count: Math.max(0, Math.min(99, Math.round(enemy.count))),
+            hpMultiplier: clampMultiplier(enemy.hpMultiplier),
+            speedMultiplier: clampMultiplier(enemy.speedMultiplier),
+            rewardMultiplier: clampMultiplier(enemy.rewardMultiplier),
+        }))
+        .filter((enemy) => {
+            if (
+                seen.has(enemy.archetypeName) ||
+                !LUMBRIDGE_TD_ENEMY_ARCHETYPES.some(
+                    (archetype) => archetype.name === enemy.archetypeName,
+                )
+            ) {
+                return false;
+            }
+            seen.add(enemy.archetypeName);
+            return true;
+        });
+
+    return {
+        wave: Math.max(1, Math.round(config.wave)),
+        spawnIntervalMs: Math.max(120, Math.min(3000, Math.round(config.spawnIntervalMs))),
+        enemies,
+    };
+}
+
+function clampMultiplier(value: number): number {
+    return Number(Math.max(0.1, Math.min(10, value || 1)).toFixed(2));
+}
+
 export const LUMBRIDGE_PATH: ScreenPoint[] = [
     { x: 0.9, y: 0.96 },
     { x: 0.87, y: 0.88 },
@@ -260,6 +372,26 @@ export const TOWER_DEFS: Record<TowerKind, TowerDefinition> = {
         color: "#ff8f52",
     },
 };
+
+export const TOWER_MAX_LEVEL = 4;
+
+export function getTowerStats(tower: Tower): TowerStats {
+    const def = TOWER_DEFS[tower.kind];
+    const upgradeLevel = Math.max(0, tower.level - 1);
+    return {
+        damage: Math.round(def.damage * (1 + upgradeLevel * 0.38)),
+        cooldownMs: Math.round(def.cooldownMs * Math.pow(0.86, upgradeLevel)),
+        range: Number((def.range + upgradeLevel * 0.018).toFixed(3)),
+    };
+}
+
+export function getTowerUpgradeCost(tower: Tower): number | undefined {
+    if (tower.level >= TOWER_MAX_LEVEL) {
+        return undefined;
+    }
+    const def = TOWER_DEFS[tower.kind];
+    return Math.round(def.cost * (0.75 + tower.level * 0.45));
+}
 
 function buildSegments(path: ScreenPoint[]) {
     const segments = [];
@@ -346,6 +478,9 @@ export function createInitialLumbridgeTdState(): LumbridgeTdState {
         showWaveSummary: false,
         selectedEnemy: null,
         showEnemyInfo: false,
+        selectedTowerId: null,
+        showTowerInfo: false,
+        waveConfigs: {},
     };
 }
 
@@ -355,11 +490,12 @@ export function startWave(state: LumbridgeTdState): LumbridgeTdState {
     }
 
     const nextWave = state.wave + 1;
+    const waveConfig = getWaveConfig(state, nextWave);
     return {
         ...state,
         wave: nextWave,
         waveInProgress: true,
-        waveSpawnCount: 5 + nextWave * 2,
+        waveSpawnCount: getWaveEnemyCount(waveConfig),
         waveSpawned: 0,
         nextSpawnInMs: 0,
     };
@@ -394,11 +530,16 @@ export function placeTower(
                 id: `${padId}-${state.selectedTower}`,
                 padId,
                 kind: state.selectedTower,
+                level: 1,
                 rotation: ((rotation % 4) + 4) % 4,
                 cooldownRemainingMs: 0,
                 world,
             },
         ],
+        selectedTowerId: `${padId}-${state.selectedTower}`,
+        showTowerInfo: true,
+        selectedEnemy: null,
+        showEnemyInfo: false,
     };
 }
 
@@ -406,6 +547,53 @@ export function selectTower(state: LumbridgeTdState, selectedTower: TowerKind): 
     return {
         ...state,
         selectedTower,
+    };
+}
+
+export function selectPlacedTower(state: LumbridgeTdState, towerId: string): LumbridgeTdState {
+    if (!state.towers.some((tower) => tower.id === towerId)) {
+        return state;
+    }
+    return {
+        ...state,
+        selectedTowerId: towerId,
+        showTowerInfo: true,
+        selectedEnemy: null,
+        showEnemyInfo: false,
+    };
+}
+
+export function deselectTower(state: LumbridgeTdState): LumbridgeTdState {
+    return {
+        ...state,
+        selectedTowerId: null,
+        showTowerInfo: false,
+    };
+}
+
+export function upgradeTower(state: LumbridgeTdState, towerId: string): LumbridgeTdState {
+    if (state.gameOver) {
+        return state;
+    }
+
+    const tower = state.towers.find((candidate) => candidate.id === towerId);
+    if (!tower) {
+        return state;
+    }
+
+    const upgradeCost = getTowerUpgradeCost(tower);
+    if (upgradeCost === undefined || state.gold < upgradeCost) {
+        return state;
+    }
+
+    return {
+        ...state,
+        gold: state.gold - upgradeCost,
+        towers: state.towers.map((candidate) =>
+            candidate.id === towerId ? { ...candidate, level: candidate.level + 1 } : candidate,
+        ),
+        selectedTowerId: towerId,
+        showTowerInfo: true,
     };
 }
 
@@ -431,6 +619,8 @@ export function selectEnemy(state: LumbridgeTdState, enemy: Enemy): LumbridgeTdS
         ...state,
         selectedEnemy: enemy,
         showEnemyInfo: true,
+        selectedTowerId: null,
+        showTowerInfo: false,
     };
 }
 
@@ -462,7 +652,7 @@ export function tickLumbridgeTd(state: LumbridgeTdState, deltaMs: number): Lumbr
     if (nextState.waveInProgress) {
         nextState.nextSpawnInMs -= deltaMs;
         while (nextState.waveSpawned < nextState.waveSpawnCount && nextState.nextSpawnInMs <= 0) {
-            const newEnemy = createEnemy(nextState.wave, nextState.waveSpawned);
+            const newEnemy = createEnemy(nextState, nextState.wave, nextState.waveSpawned);
             nextState.enemies.push(newEnemy);
 
             // Emit spawn event to create 3D NPC
@@ -479,7 +669,7 @@ export function tickLumbridgeTd(state: LumbridgeTdState, deltaMs: number): Lumbr
             });
 
             nextState.waveSpawned++;
-            nextState.nextSpawnInMs += Math.max(320, 900 - nextState.wave * 35);
+            nextState.nextSpawnInMs += getWaveConfig(nextState, nextState.wave).spawnIntervalMs;
         }
     }
 
@@ -502,7 +692,7 @@ export function tickLumbridgeTd(state: LumbridgeTdState, deltaMs: number): Lumbr
         if (enemy.progress >= 1) {
             leakedDamage += enemy.damage;
             enemiesRemoved.push(enemy.id);
-            emitLumbridgeTdEnemyRemoved(enemy.id);
+            emitLumbridgeTdEnemyRemoved({ id: enemy.id, reason: "leak" });
             return false;
         }
         return true;
@@ -524,18 +714,19 @@ export function tickLumbridgeTd(state: LumbridgeTdState, deltaMs: number): Lumbr
         }
 
         const towerDef = TOWER_DEFS[tower.kind];
+        const towerStats = getTowerStats(tower);
         const pad = LUMBRIDGE_PADS.find((candidate) => candidate.id === tower.padId);
         if (!pad) {
             continue;
         }
 
-        const target = getClosestEnemyInRange(nextState.enemies, pad, towerDef.range);
+        const target = getClosestEnemyInRange(nextState.enemies, pad, towerStats.range);
         if (!target) {
             continue;
         }
 
-        target.hp -= towerDef.damage;
-        tower.cooldownRemainingMs = towerDef.cooldownMs;
+        target.hp -= towerStats.damage;
+        tower.cooldownRemainingMs = towerStats.cooldownMs;
         nextState.projectiles.push({
             id: `${tower.id}-${target.id}-${Math.random().toString(36).slice(2, 8)}`,
             kind: tower.kind,
@@ -555,7 +746,7 @@ export function tickLumbridgeTd(state: LumbridgeTdState, deltaMs: number): Lumbr
             nextState.currentWaveLoot.push(...drops);
             enemiesKilled++;
             enemiesRemoved.push(enemy.id);
-            emitLumbridgeTdEnemyRemoved(enemy.id);
+            emitLumbridgeTdEnemyRemoved({ id: enemy.id, reason: "defeated" });
             return false;
         }
         return true;
@@ -596,22 +787,49 @@ export function tickLumbridgeTd(state: LumbridgeTdState, deltaMs: number): Lumbr
     return nextState;
 }
 
-function createEnemy(wave: number, index: number): Enemy {
-    const waveArchetypes = getWaveArchetypes(wave);
-    const archetype = waveArchetypes[index % waveArchetypes.length];
+function createEnemy(state: LumbridgeTdState, wave: number, index: number): Enemy {
+    const waveEnemy = getWaveEnemyEntry(getWaveConfig(state, wave), index);
+    const archetype =
+        LUMBRIDGE_TD_ENEMY_ARCHETYPES.find(
+            (candidate) => candidate.name === waveEnemy.archetypeName,
+        ) ?? LUMBRIDGE_TD_ENEMY_ARCHETYPES[0];
     const waveScale = 1 + (wave - 1) * 0.22;
-    const mixScale = 1 + (index % waveArchetypes.length) * 0.08;
+    const mixScale = 1 + (index % Math.max(1, getWaveConfig(state, wave).enemies.length)) * 0.08;
+    const hp = Math.round(archetype.hp * waveScale * mixScale * waveEnemy.hpMultiplier);
 
     return {
         id: `enemy-${wave}-${index}`,
         archetype,
-        hp: Math.round(archetype.hp * waveScale * mixScale),
-        maxHp: Math.round(archetype.hp * waveScale * mixScale),
+        hp,
+        maxHp: hp,
         progress: 0,
-        speed: archetype.speed + (wave - 1) * 0.0015 + (index % waveArchetypes.length) * 0.0005,
-        reward: archetype.reward + (wave - 1) * 2 + (index % waveArchetypes.length),
+        speed:
+            (archetype.speed + (wave - 1) * 0.0015 + (index % 4) * 0.0005) *
+            waveEnemy.speedMultiplier,
+        reward: Math.round(
+            (archetype.reward + (wave - 1) * 2 + (index % 4)) * waveEnemy.rewardMultiplier,
+        ),
         damage: 1,
     };
+}
+
+function getWaveEnemyEntry(config: WaveConfig, index: number): WaveEnemyConfig {
+    let cursor = 0;
+    for (const enemy of config.enemies) {
+        cursor += enemy.count;
+        if (index < cursor) {
+            return enemy;
+        }
+    }
+    return (
+        config.enemies[0] ?? {
+            archetypeName: LUMBRIDGE_TD_ENEMY_ARCHETYPES[0].name,
+            count: 1,
+            hpMultiplier: 1,
+            speedMultiplier: 1,
+            rewardMultiplier: 1,
+        }
+    );
 }
 
 function getClosestEnemyInRange(

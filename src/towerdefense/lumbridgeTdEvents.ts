@@ -61,8 +61,14 @@ export function emitLumbridgeTdEnemyUpdated(detail: LumbridgeTdEnemyUpdateDetail
     window.dispatchEvent(new CustomEvent(LUMBRIDGE_TD_ENEMY_UPDATED, { detail }));
 }
 
-export function emitLumbridgeTdEnemyRemoved(enemyId: string): void {
-    window.dispatchEvent(new CustomEvent(LUMBRIDGE_TD_ENEMY_REMOVED, { detail: { id: enemyId } }));
+export type LumbridgeTdEnemyRemovedDetail = {
+    id: string;
+    reason?: "leak" | "defeated";
+};
+
+export function emitLumbridgeTdEnemyRemoved(detail: LumbridgeTdEnemyRemovedDetail | string): void {
+    const normalized = typeof detail === "string" ? { id: detail } : detail;
+    window.dispatchEvent(new CustomEvent(LUMBRIDGE_TD_ENEMY_REMOVED, { detail: normalized }));
 }
 
 export function emitLumbridgeTdEnemySelected(enemyId: string): void {

@@ -15,7 +15,9 @@ import { MapViewer } from "./MapViewer";
 import "./MapViewerContainer.css";
 import { MapViewerControls } from "./MapViewerControls";
 import { MapViewerRenderer } from "./MapViewerRenderer";
-import { LumbridgeTowerDefenseOverlay } from "./td/LumbridgeTowerDefenseOverlay";
+import { LumbridgeTowerDefenseOverlay } from "@rs-map-viewer/towerdefense/LumbridgeTowerDefenseOverlay";
+
+const JoystickComponent = Joystick as any;
 
 interface MapViewerContainerProps {
     mapViewer: MapViewer;
@@ -178,27 +180,27 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             )}
 
             {!hideUi && isTouchDevice && (
-                <div className="joystick-container left">
-                    <Joystick
+                    <div className="joystick-container left">
+                    <JoystickComponent
                         size={75}
                         baseColor="#181C20"
                         stickColor="#007BFF"
                         stickSize={40}
                         move={mapViewer.inputManager.onPositionJoystickMove}
                         stop={mapViewer.inputManager.onPositionJoystickStop}
-                    ></Joystick>
+                    ></JoystickComponent>
                 </div>
             )}
             {!hideUi && isTouchDevice && (
                 <div className="joystick-container right">
-                    <Joystick
+                    <JoystickComponent
                         size={75}
                         baseColor="#181C20"
                         stickColor="#007BFF"
                         stickSize={40}
                         move={mapViewer.inputManager.onCameraJoystickMove}
                         stop={mapViewer.inputManager.onCameraJoystickStop}
-                    ></Joystick>
+                    ></JoystickComponent>
                 </div>
             )}
 

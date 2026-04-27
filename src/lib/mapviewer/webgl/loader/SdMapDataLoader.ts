@@ -11,12 +11,12 @@ import { LocEntity } from "../../../rs/scene/entity/LocEntity";
 import { TextureLoader } from "../../../rs/texture/TextureLoader";
 import { NpcSpawn, getMapNpcSpawns } from "../../data/npc/NpcSpawn";
 import { ObjSpawn, getMapObjSpawns } from "../../data/obj/ObjSpawn";
-import { LUMBRIDGE_TD_ENEMY_ARCHETYPES } from "../../td/lumbridgeTdEnemies";
+import { LUMBRIDGE_TD_ENEMY_ARCHETYPES } from "@rs-map-viewer/towerdefense/lumbridgeTdEnemies";
 import {
     LUMBRIDGE_TD_MAP_X,
     LUMBRIDGE_TD_MAP_Y,
     getLumbridgeTdRoute,
-} from "../../td/lumbridgeTdRoute";
+} from "@rs-map-viewer/towerdefense/lumbridgeTdRoute";
 import { loadMinimapBlob } from "../../worker/MinimapData";
 import { RenderDataLoader, RenderDataResult } from "../../worker/RenderDataLoader";
 import { WorkerState } from "../../worker/RenderDataWorker";

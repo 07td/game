@@ -22,9 +22,9 @@
     "@craco/craco": "^7.1.0"
   },
   "scripts": {
-    "start": "craco start",
-    "build": "craco build",
-    "test": "craco test",
+    "start": "REACT_APP_TD=1 npm --prefix .. run start",
+    "build": "npm --prefix .. run build",
+    "test": "npm --prefix .. run test",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {

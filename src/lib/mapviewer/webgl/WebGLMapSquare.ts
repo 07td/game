@@ -16,7 +16,7 @@ import { getMapSquareId } from "../../rs/map/MapFileIndex";
 import { CollisionFlag } from "../../rs/pathfinder/flag/CollisionFlag";
 import { CollisionMap } from "../../rs/scene/CollisionMap";
 import { Scene } from "../../rs/scene/Scene";
-import { getLumbridgeTdRoute } from "../td/lumbridgeTdRoute";
+import { getLumbridgeTdRoute } from "@rs-map-viewer/towerdefense/lumbridgeTdRoute";
 import { DrawRange, newDrawRange } from "./DrawRange";
 import { SdMapData } from "./loader/SdMapData";
 import { LocAnimated } from "./loc/LocAnimated";
