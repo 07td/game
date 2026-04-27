@@ -83,12 +83,12 @@ async function downloadCaches(count, cacheName) {
     const cachesToDownload = [];
     let totalBytes = 0;
 
-    for (let i = 0; i < count && i < caches.length; i++) {
-        const cache = caches[i];
+    const cachesToConsider = cacheName
+        ? caches.filter((cache) => getCacheDir(cache).replace(/\/$/, "") === cacheName)
+        : caches.slice(0, count);
+
+    for (const cache of cachesToConsider) {
         const cacheDir = getCacheDir(cache);
-        if (cacheName && cacheDir.replace(/\/$/, "") !== cacheName) {
-            continue;
-        }
         if (fs.existsSync(cacheDir + "info.json")) {
             const oldCache = JSON.parse(fs.readFileSync(cacheDir + "info.json"));
             if (
@@ -106,6 +106,10 @@ async function downloadCaches(count, cacheName) {
             cachesToDownload.push(cache);
             totalBytes += cache.size;
         }
+    }
+
+    if (cacheName && cachesToConsider.length === 0) {
+        throw new Error(`Cache not found: ${cacheName}`);
     }
 
     if (totalBytes > 0) {
