@@ -35,6 +35,8 @@ jobs:
               run: npm install --legacy-peer-deps --no-fund --no-audit
 
             - name: Build site
+              env:
+                  CI: false
               run: npm run build
 
             - name: Setup Pages
