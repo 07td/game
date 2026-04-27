@@ -1,32 +1,49 @@
 import { vec4 } from "gl-matrix";
-import { MouseEvent, useEffect, useRef, useState } from "react";
+import { CSSProperties, MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { MapViewer } from "../lib/mapviewer/MapViewer";
 import { WebGLMapSquare } from "../lib/mapviewer/webgl/WebGLMapSquare";
+import { lerp, slerp } from "../util/MathUtil";
 import { DukeHoracioChatHeadCanvas } from "./DukeHoracioChatHeadCanvas";
-import coinsIcon from "./coins-100.png";
 import "./LumbridgeTowerDefenseOverlay.css";
-import hitpointsIcon from "./hitpoints-icon.png";
 import { TdLootItemCanvas } from "./TdLootItemCanvas";
+import coinsIcon from "./coins-100.png";
+import hitpointsIcon from "./hitpoints-icon.png";
 import {
     Enemy,
     LUMBRIDGE_PADS,
+    LUMBRIDGE_PATH,
+    LUMBRIDGE_TD_ENEMY_ARCHETYPES,
     TOWER_DEFS,
+    TOWER_MAX_LEVEL,
     TowerKind,
+    WaveConfig,
+    createDefaultWaveConfig,
     createInitialLumbridgeTdState,
     deselectEnemy,
+    deselectTower,
     dismissWaveSummary,
+    getTowerStats,
+    getTowerUpgradeCost,
+    getWaveConfig,
+    getWaveEnemyCount,
     placeTower,
     resetGame,
+    resetWaveConfig,
     samplePath,
+    samplePathWorldTile,
     selectEnemy,
+    selectPlacedTower,
     selectTower,
     startWave,
     startWaveFromSummary,
     tickLumbridgeTd,
+    updateWaveConfig,
+    upgradeTower,
 } from "./lumbridgeTd";
 import {
     LUMBRIDGE_TD_ENEMY_SELECTED,
+    LUMBRIDGE_TD_START_WAVE,
     emitLumbridgeTdReset,
     emitLumbridgeTdStartWave,
     emitLumbridgeTdTowersChanged,
@@ -55,7 +72,134 @@ type ProjectedTowerPad = {
     color: string;
     built: boolean;
     disabled: boolean;
+    towerId?: string;
+    level?: number;
 };
+
+type DraggablePanelKey = "rightRail" | "buildPanel" | "enemyInfo" | "levelEditor";
+
+type DraggablePanelPosition = {
+    x: number;
+    y: number;
+};
+
+type TdCameraMode = "target" | "line";
+
+type RoutePoint = {
+    x: number;
+    y: number;
+};
+
+type RouteSegment = {
+    from: RoutePoint;
+    to: RoutePoint;
+    length: number;
+    start: number;
+    end: number;
+};
+
+const TD_SOUND_BASE = `${process.env.PUBLIC_URL}/towerdefense-sfx`;
+const TD_SOUND_FILES = {
+    build: "Equip_metal_body.wav.ogg",
+    spawn: "Impling_spawn.ogg.ogg",
+    dead: "You_Are_Dead!.ogg",
+    victory: "You_Are_Victorious!_(Emir's_Arena).ogg",
+} as const;
+
+function getMiddleWaveEnemy(enemies: Enemy[]): Enemy | undefined {
+    if (enemies.length === 0) {
+        return undefined;
+    }
+
+    const sorted = [...enemies].sort((lhs, rhs) => lhs.progress - rhs.progress);
+    return sorted[Math.floor(sorted.length / 2)];
+}
+
+function getLineViewRoutePoints(): RoutePoint[] {
+    const route = getLumbridgeTdRoute();
+    return route.length >= 2 ? route.map(localTileToRouteEditorPoint) : LUMBRIDGE_PATH;
+}
+
+function buildRouteSegments(path: RoutePoint[]): { segments: RouteSegment[]; totalLength: number } {
+    const segments: RouteSegment[] = [];
+    let totalLength = 0;
+
+    for (let index = 0; index < path.length - 1; index++) {
+        const from = path[index];
+        const to = path[index + 1];
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const length = Math.hypot(dx, dy);
+        segments.push({
+            from,
+            to,
+            length,
+            start: totalLength,
+            end: totalLength + length,
+        });
+        totalLength += length;
+    }
+
+    return { segments, totalLength };
+}
+
+function getRouteSampleForProgress(progress: number):
+    | {
+          current: RoutePoint;
+          next: RoutePoint;
+          forwardX: number;
+          forwardZ: number;
+      }
+    | undefined {
+    const path = getLineViewRoutePoints();
+    if (path.length < 2) {
+        return undefined;
+    }
+
+    const pathSegments = buildRouteSegments(path);
+    if (pathSegments.totalLength <= 0) {
+        return undefined;
+    }
+
+    const targetDistance = Math.max(0, Math.min(progress, 1)) * pathSegments.totalLength;
+    const segment =
+        pathSegments.segments.find(
+            (candidate, index) =>
+                targetDistance <= candidate.end || index === pathSegments.segments.length - 1,
+        ) ?? pathSegments.segments[pathSegments.segments.length - 1];
+
+    const segmentProgress =
+        segment.length === 0 ? 0 : (targetDistance - segment.start) / segment.length;
+    const current = {
+        x: segment.from.x + (segment.to.x - segment.from.x) * segmentProgress,
+        y: segment.from.y + (segment.to.y - segment.from.y) * segmentProgress,
+    };
+
+    return {
+        current,
+        next: segment.to,
+        forwardX: segment.to.x - segment.from.x,
+        forwardZ: segment.to.y - segment.from.y,
+    };
+}
+
+function routePointToWorldTile(point: RoutePoint): { x: number; y: number } {
+    return {
+        x: LUMBRIDGE_TD_MAP_X * 64 + point.x * 64,
+        y: LUMBRIDGE_TD_MAP_Y * 64 + (1 - point.y) * 64,
+    };
+}
+
+function getAverageEnemyHeight(enemies: Enemy[]): number {
+    if (enemies.length === 0) {
+        return 1.25;
+    }
+
+    return (
+        enemies.reduce((sum, enemy) => sum + getFallbackEnemyOverheadHeight(enemy), 0) /
+        enemies.length
+    );
+}
 
 const DUKE_HORACIO_INTRO_LINES = [
     "They're here! What do we do?!",
@@ -73,8 +217,14 @@ export function LumbridgeTowerDefenseOverlay({
     const [hoveredPadId, setHoveredPadId] = useState<string | undefined>();
     const [buildPreview, setBuildPreview] = useState<{ x: number; y: number } | undefined>();
     const [pathOverlayVisible, setPathOverlayVisible] = useState(true);
-    const [routeEditorOpen, setRouteEditorOpen] = useState(true);
+    const [routeEditorOpen, setRouteEditorOpen] = useState(false);
     const [routeDraft, setRouteDraft] = useState(getLumbridgeTdRoute());
+    const [selectedRoutePointIndex, setSelectedRoutePointIndex] = useState<number | undefined>();
+    const [selectedWaveNumber, setSelectedWaveNumber] = useState(1);
+    const [cameraMode, setCameraMode] = useState<TdCameraMode>("target");
+    const [panelPositions, setPanelPositions] = useState<
+        Partial<Record<DraggablePanelKey, DraggablePanelPosition>>
+    >({});
     const [worldRoutePolygons, setWorldRoutePolygons] = useState<string[]>([]);
     const [worldRouteLine, setWorldRouteLine] = useState("");
     const [worldPadOverlays, setWorldPadOverlays] = useState<ProjectedTowerPad[]>([]);
@@ -83,6 +233,103 @@ export function LumbridgeTowerDefenseOverlay({
         Record<string, { x: number; y: number; z: number }>
     >({});
     const routeEditorRef = useRef<HTMLDivElement>(null);
+    const lastDeathAnnouncementRef = useRef(false);
+    const lastVictoryAnnouncementRef = useRef(false);
+    const playSound = useCallback((fileName: string, volume: number = 0.65) => {
+        const audio = new Audio(`${TD_SOUND_BASE}/${fileName}`);
+        audio.volume = volume;
+        void audio.play().catch(() => {});
+    }, []);
+
+    useEffect(() => {
+        const onWaveStart = () => playSound(TD_SOUND_FILES.spawn, 0.42);
+
+        window.addEventListener(LUMBRIDGE_TD_START_WAVE, onWaveStart);
+        return () => {
+            window.removeEventListener(LUMBRIDGE_TD_START_WAVE, onWaveStart);
+        };
+    }, [playSound]);
+
+    useEffect(() => {
+        if (state.gameOver) {
+            if (!lastDeathAnnouncementRef.current) {
+                playSound(TD_SOUND_FILES.dead, 0.55);
+                lastDeathAnnouncementRef.current = true;
+            }
+            return;
+        }
+
+        lastDeathAnnouncementRef.current = false;
+        if (state.showWaveSummary && state.waveSummary && !lastVictoryAnnouncementRef.current) {
+            playSound(TD_SOUND_FILES.victory, 0.52);
+            lastVictoryAnnouncementRef.current = true;
+        }
+        if (!state.showWaveSummary) {
+            lastVictoryAnnouncementRef.current = false;
+        }
+    }, [playSound, state.gameOver, state.showWaveSummary, state.waveSummary]);
+
+    const followSelectedEnemyCamera = useCallback(
+        (snap: boolean = false) => {
+            const enemy =
+                cameraMode === "line"
+                    ? getMiddleWaveEnemy(stateRef.current.enemies)
+                    : stateRef.current.selectedEnemy;
+            if (!enemy) {
+                return;
+            }
+
+            const lineViewSample =
+                cameraMode === "line" ? getRouteSampleForProgress(enemy.progress) : undefined;
+            const lineTarget = lineViewSample
+                ? routePointToWorldTile(lineViewSample.current)
+                : undefined;
+            const lineNext = lineViewSample
+                ? routePointToWorldTile(lineViewSample.next)
+                : undefined;
+            const target = lineTarget ?? samplePathWorldTile(enemy.progress);
+            const next = lineNext ?? samplePathWorldTile(Math.min(1, enemy.progress + 0.005));
+            const directionX = lineViewSample ? next.x - target.x : next.x - target.x;
+            const directionZ = lineViewSample ? next.y - target.y : next.y - target.y;
+            const directionLength = Math.hypot(directionX, directionZ) || 1;
+            const normalizedX = directionX / directionLength;
+            const normalizedZ = directionZ / directionLength;
+            const tdMap = mapViewer.renderer.mapManager.getMap(
+                LUMBRIDGE_TD_MAP_X,
+                LUMBRIDGE_TD_MAP_Y,
+            ) as WebGLMapSquare | undefined;
+            const localX = target.x - LUMBRIDGE_TD_MAP_X * 64;
+            const localY = target.y - LUMBRIDGE_TD_MAP_Y * 64;
+            const groundHeight = tdMap ? getLocalWorldHeight(tdMap, localX, localY) : 0;
+            const camera = mapViewer.camera;
+            const progress = snap ? 1 : cameraMode === "line" ? 0.18 : 0.16;
+            const targetYaw =
+                cameraMode === "line"
+                    ? (((1024 + Math.atan2(-normalizedX, -normalizedZ) / (Math.PI / 1024)) % 2048) +
+                          2048) %
+                      2048
+                    : camera.yaw;
+            const targetPitch = cameraMode === "line" ? -42 : camera.pitch;
+            const averageEnemyHeight =
+                cameraMode === "line"
+                    ? getAverageEnemyHeight(stateRef.current.enemies)
+                    : getFallbackEnemyOverheadHeight(enemy);
+            const targetHeight =
+                cameraMode === "line" ? groundHeight - averageEnemyHeight - 0.1 : camera.pos[1];
+            const targetX = cameraMode === "line" ? target.x - normalizedX * 2.6 : target.x;
+            const targetZ = cameraMode === "line" ? target.y - normalizedZ * 2.6 : target.y;
+
+            camera.pos[0] = lerp(camera.pos[0], targetX, progress);
+            camera.pos[1] = lerp(camera.pos[1], targetHeight, progress);
+            camera.pos[2] = lerp(camera.pos[2], targetZ, progress);
+            camera.pitch = lerp(camera.pitch, targetPitch, progress);
+            if (cameraMode === "line") {
+                camera.yaw = snap ? targetYaw : slerp(camera.yaw, targetYaw, progress, 2048);
+            }
+            camera.updated = true;
+        },
+        [cameraMode, mapViewer],
+    );
 
     useEffect(() => {
         let animationId = -1;
@@ -100,6 +347,7 @@ export function LumbridgeTowerDefenseOverlay({
                 stateRef.current.enemies,
                 enemyHealthbarRefs.current,
             );
+            followSelectedEnemyCamera();
 
             if (snapshotTimer >= 50) {
                 snapshotTimer = 0;
@@ -111,7 +359,7 @@ export function LumbridgeTowerDefenseOverlay({
 
         animationId = requestAnimationFrame(frame);
         return () => cancelAnimationFrame(animationId);
-    }, []);
+    }, [followSelectedEnemyCamera, mapViewer]);
 
     useEffect(() => {
         setRouteDraft(getLumbridgeTdRoute());
@@ -127,6 +375,7 @@ export function LumbridgeTowerDefenseOverlay({
             }
             stateRef.current = selectEnemy(stateRef.current, enemy);
             setState({ ...stateRef.current });
+            followSelectedEnemyCamera(true);
         };
         window.addEventListener(LUMBRIDGE_TD_ENEMY_SELECTED, onEnemySelected as EventListener);
         return () =>
@@ -134,7 +383,11 @@ export function LumbridgeTowerDefenseOverlay({
                 LUMBRIDGE_TD_ENEMY_SELECTED,
                 onEnemySelected as EventListener,
             );
-    }, []);
+    }, [followSelectedEnemyCamera]);
+
+    useEffect(() => {
+        followSelectedEnemyCamera(true);
+    }, [cameraMode, followSelectedEnemyCamera]);
 
     useEffect(() => {
         const canvas = mapViewer.renderer.canvas;
@@ -282,13 +535,14 @@ export function LumbridgeTowerDefenseOverlay({
             for (const pad of LUMBRIDGE_PADS) {
                 const tower = state.towers.find((candidate) => candidate.padId === pad.id);
                 const towerDef = tower ? TOWER_DEFS[tower.kind] : TOWER_DEFS[state.selectedTower];
+                const towerStats = tower ? getTowerStats(tower) : towerDef;
                 const tileCorners = getProjectedPadCorners(mapViewer, tdMap, pad.tileX, pad.tileY);
                 const rangePolygon = getProjectedGroundCircle(
                     mapViewer,
                     tdMap,
                     pad.tileX + 0.5,
                     pad.tileY + 0.5,
-                    towerDef.range * 64,
+                    towerStats.range * 64,
                 );
                 const label = projectWorldPoint(
                     mapViewer,
@@ -308,6 +562,8 @@ export function LumbridgeTowerDefenseOverlay({
                         color: towerDef.color,
                         built: tower !== undefined,
                         disabled: tower === undefined && state.gold < towerDef.cost,
+                        towerId: tower?.id,
+                        level: tower?.level,
                     });
                 }
             }
@@ -341,11 +597,6 @@ export function LumbridgeTowerDefenseOverlay({
         });
     };
 
-    const onSelectTower = (towerKind: TowerKind) => {
-        stateRef.current = selectTower(stateRef.current, towerKind);
-        setState({ ...stateRef.current });
-    };
-
     const onStartBuild = (towerKind: TowerKind) => {
         stateRef.current = selectTower(stateRef.current, towerKind);
         setState({ ...stateRef.current });
@@ -372,10 +623,12 @@ export function LumbridgeTowerDefenseOverlay({
         setState({ ...stateRef.current });
         setBuildMode(undefined);
         setHoveredPadId(undefined);
+        playSound(TD_SOUND_FILES.build, 0.45);
     };
 
     const onReset = () => {
-        stateRef.current = resetGame();
+        const waveConfigs = stateRef.current.waveConfigs;
+        stateRef.current = { ...resetGame(), waveConfigs };
         setState({ ...stateRef.current });
         setIntroStep(0);
         setBuildMode(undefined);
@@ -404,6 +657,7 @@ export function LumbridgeTowerDefenseOverlay({
         }
         stateRef.current = selectEnemy(stateRef.current, enemy);
         setState({ ...stateRef.current });
+        followSelectedEnemyCamera(true);
     };
 
     const onDeselectEnemy = () => {
@@ -411,44 +665,267 @@ export function LumbridgeTowerDefenseOverlay({
         setState({ ...stateRef.current });
     };
 
-    const onRouteEditorClick = (event: MouseEvent<HTMLDivElement>) => {
-        const rect = routeEditorRef.current?.getBoundingClientRect();
-        if (!rect) {
+    const onSelectPlacedTower = (towerId: string) => {
+        stateRef.current = selectPlacedTower(stateRef.current, towerId);
+        setState({ ...stateRef.current });
+    };
+
+    const onDeselectTower = () => {
+        stateRef.current = deselectTower(stateRef.current);
+        setState({ ...stateRef.current });
+    };
+
+    const onUpgradeSelectedTower = () => {
+        if (!stateRef.current.selectedTowerId) {
+            playSound(TD_SOUND_FILES.locked, 0.35);
             return;
         }
-        const normalizedX = (event.clientX - rect.left) / rect.width;
-        const normalizedY = (event.clientY - rect.top) / rect.height;
-        const nextRoute = [...routeDraft, routeEditorPointToLocalTile(normalizedX, normalizedY)];
+        const nextState = upgradeTower(stateRef.current, stateRef.current.selectedTowerId);
+        if (nextState === stateRef.current) {
+            playSound(TD_SOUND_FILES.locked, 0.35);
+            return;
+        }
+        stateRef.current = nextState;
+        setState({ ...stateRef.current });
+        playSound(TD_SOUND_FILES.upgrade, 0.45);
+    };
+
+    const commitRouteDraft = (nextRoute: typeof routeDraft) => {
         setRouteDraft(nextRoute);
         setLumbridgeTdRoute(nextRoute);
         emitLumbridgeTdReset();
+    };
+
+    const getRouteTileFromEvent = (event: { clientX: number; clientY: number }) => {
+        const rect = routeEditorRef.current?.getBoundingClientRect();
+        if (!rect) {
+            return undefined;
+        }
+        const normalizedX = (event.clientX - rect.left) / rect.width;
+        const normalizedY = (event.clientY - rect.top) / rect.height;
+        return routeEditorPointToLocalTile(normalizedX, normalizedY);
+    };
+
+    const onRouteEditorClick = (event: MouseEvent<HTMLDivElement>) => {
+        const point = getRouteTileFromEvent(event);
+        if (!point) {
+            return;
+        }
+        const insertAt =
+            selectedRoutePointIndex === undefined ? routeDraft.length : selectedRoutePointIndex + 1;
+        const nextRoute = [...routeDraft.slice(0, insertAt), point, ...routeDraft.slice(insertAt)];
+        commitRouteDraft(nextRoute);
+        setSelectedRoutePointIndex(insertAt);
     };
 
     const undoRoutePoint = () => {
         const nextRoute = routeDraft.slice(0, -1);
-        setRouteDraft(nextRoute);
-        setLumbridgeTdRoute(nextRoute);
-        emitLumbridgeTdReset();
+        commitRouteDraft(nextRoute);
+        setSelectedRoutePointIndex((index) =>
+            index === undefined ? undefined : Math.min(index, nextRoute.length - 1),
+        );
     };
 
     const clearRoute = () => {
-        setRouteDraft([]);
-        setLumbridgeTdRoute([]);
-        emitLumbridgeTdReset();
+        commitRouteDraft([]);
+        setSelectedRoutePointIndex(undefined);
     };
 
     const resetRoute = () => {
         const nextRoute = getDefaultLumbridgeTdRoute();
-        setRouteDraft(nextRoute);
         resetLumbridgeTdRoute();
+        setRouteDraft(nextRoute);
+        setSelectedRoutePointIndex(undefined);
         emitLumbridgeTdReset();
+    };
+
+    const removeSelectedRoutePoint = () => {
+        if (selectedRoutePointIndex === undefined) {
+            return;
+        }
+        const nextRoute = routeDraft.filter((_, index) => index !== selectedRoutePointIndex);
+        commitRouteDraft(nextRoute);
+        setSelectedRoutePointIndex(
+            nextRoute.length === 0
+                ? undefined
+                : Math.min(selectedRoutePointIndex, nextRoute.length - 1),
+        );
+    };
+
+    const reverseRoute = () => {
+        const nextRoute = [...routeDraft].reverse();
+        commitRouteDraft(nextRoute);
+        setSelectedRoutePointIndex((index) =>
+            index === undefined ? undefined : nextRoute.length - 1 - index,
+        );
+    };
+
+    const copyRouteToClipboard = () => {
+        const routeJson = JSON.stringify(routeDraft, null, 2);
+        void navigator.clipboard?.writeText(routeJson);
+    };
+
+    const onRoutePointMouseDown = (event: MouseEvent<HTMLDivElement>, index: number) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setSelectedRoutePointIndex(index);
+
+        const onMove = (moveEvent: globalThis.MouseEvent) => {
+            const point = getRouteTileFromEvent(moveEvent);
+            if (!point) {
+                return;
+            }
+            const nextRoute = routeDraft.map((candidate, candidateIndex) =>
+                candidateIndex === index ? point : candidate,
+            );
+            commitRouteDraft(nextRoute);
+        };
+        const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+        };
+
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+    };
+
+    const setSelectedWaveConfig = (config: WaveConfig) => {
+        stateRef.current = updateWaveConfig(stateRef.current, selectedWaveNumber, config);
+        setState({ ...stateRef.current });
+    };
+
+    const updateWaveEnemyCount = (archetypeName: string, count: number) => {
+        const config = getWaveConfig(stateRef.current, selectedWaveNumber);
+        const existing = config.enemies.find((enemy) => enemy.archetypeName === archetypeName);
+        const nextEnemies = existing
+            ? config.enemies.map((enemy) =>
+                  enemy.archetypeName === archetypeName ? { ...enemy, count } : enemy,
+              )
+            : [
+                  ...config.enemies,
+                  {
+                      archetypeName,
+                      count,
+                      hpMultiplier: 1,
+                      speedMultiplier: 1,
+                      rewardMultiplier: 1,
+                  },
+              ];
+        setSelectedWaveConfig({ ...config, enemies: nextEnemies });
+    };
+
+    const updateWaveEnemyMultiplier = (
+        archetypeName: string,
+        key: "hpMultiplier" | "speedMultiplier" | "rewardMultiplier",
+        value: number,
+    ) => {
+        const config = getWaveConfig(stateRef.current, selectedWaveNumber);
+        const nextEnemies = config.enemies.map((enemy) =>
+            enemy.archetypeName === archetypeName ? { ...enemy, [key]: value } : enemy,
+        );
+        setSelectedWaveConfig({ ...config, enemies: nextEnemies });
+    };
+
+    const resetSelectedWaveConfig = () => {
+        stateRef.current = resetWaveConfig(stateRef.current, selectedWaveNumber);
+        setState({ ...stateRef.current });
+    };
+
+    const getPanelPosition = (
+        key: DraggablePanelKey,
+        fallback: DraggablePanelPosition,
+    ): DraggablePanelPosition => panelPositions[key] ?? fallback;
+
+    const getRightRailPosition = (): DraggablePanelPosition => {
+        if (panelPositions.rightRail) {
+            return panelPositions.rightRail;
+        }
+        const viewportWidth = window.innerWidth || 1280;
+        return {
+            x: Math.max(12, viewportWidth - 385),
+            y: 12,
+        };
+    };
+
+    const getPanelStyle = (
+        key: DraggablePanelKey,
+        fallback: DraggablePanelPosition,
+    ): CSSProperties => {
+        const position =
+            key === "rightRail" ? getRightRailPosition() : getPanelPosition(key, fallback);
+        return {
+            left: `${position.x}px`,
+            top: `${position.y}px`,
+        };
+    };
+
+    const onPanelDragStart = (
+        key: DraggablePanelKey,
+        event: MouseEvent<HTMLElement>,
+        fallback: DraggablePanelPosition,
+    ) => {
+        const target = event.target as HTMLElement;
+        if (target.closest("button, input, select, textarea")) {
+            return;
+        }
+
+        const panel = event.currentTarget.closest(".td-draggable-panel") as HTMLElement | null;
+        if (!panel) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        const rect = panel.getBoundingClientRect();
+        const offsetX = event.clientX - rect.left;
+        const offsetY = event.clientY - rect.top;
+
+        const onMove = (moveEvent: globalThis.MouseEvent) => {
+            const maxX = Math.max(0, window.innerWidth - rect.width);
+            const maxY = Math.max(
+                0,
+                window.innerHeight - Math.min(rect.height, window.innerHeight),
+            );
+            const nextPosition = {
+                x: Math.max(0, Math.min(maxX, moveEvent.clientX - offsetX)),
+                y: Math.max(0, Math.min(maxY, moveEvent.clientY - offsetY)),
+            };
+            setPanelPositions((current) => ({
+                ...current,
+                [key]: nextPosition,
+            }));
+        };
+        const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+        };
+
+        setPanelPositions((current) => ({
+            ...current,
+            [key]: key === "rightRail" ? getRightRailPosition() : getPanelPosition(key, fallback),
+        }));
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
     };
 
     const routeImageUrl = mapViewer.getMapImageUrl(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y, false);
     const routeDraftPoints = routeDraft.map(localTileToRouteEditorPoint);
+    const activeWaveConfig = getWaveConfig(state, selectedWaveNumber);
     const towerKinds: TowerKind[] = ["bolt", "cannon", "mage"];
     const introLine = DUKE_HORACIO_INTRO_LINES[introStep];
     const showDeathScreen = state.gameOver;
+    const selectedTower =
+        state.showTowerInfo && state.selectedTowerId
+            ? state.towers.find((tower) => tower.id === state.selectedTowerId)
+            : undefined;
+    const selectedTowerDef = selectedTower ? TOWER_DEFS[selectedTower.kind] : undefined;
+    const selectedTowerStats = selectedTower ? getTowerStats(selectedTower) : undefined;
+    const selectedTowerUpgradeCost = selectedTower ? getTowerUpgradeCost(selectedTower) : undefined;
+    const nextTowerStats =
+        selectedTower && selectedTowerUpgradeCost !== undefined
+            ? getTowerStats({ ...selectedTower, level: selectedTower.level + 1 })
+            : undefined;
 
     return (
         <div
@@ -456,6 +933,9 @@ export function LumbridgeTowerDefenseOverlay({
             onClick={() => {
                 if (state.selectedEnemy) {
                     onDeselectEnemy();
+                }
+                if (state.selectedTowerId) {
+                    onDeselectTower();
                 }
             }}
         >
@@ -511,63 +991,80 @@ export function LumbridgeTowerDefenseOverlay({
                 </div>
             )}
 
-            <div className="td-build-panel rs-border rs-background">
-                <div className="td-panel-title">Build Mode</div>
-                <div className="td-build-copy content-text">
-                    <span>Left-click to place</span>
-                    <span>Right-click to cancel</span>
+            {buildMode && (
+                <div
+                    className="td-build-panel td-draggable-panel rs-border rs-background"
+                    style={getPanelStyle("buildPanel", { x: 12, y: 12 })}
+                >
+                    <div
+                        className="td-panel-title td-drag-handle"
+                        onMouseDown={(event) =>
+                            onPanelDragStart("buildPanel", event, { x: 12, y: 12 })
+                        }
+                    >
+                        <span>{TOWER_DEFS[buildMode].name}</span>
+                        <span className="td-drag-grip" aria-hidden="true" />
+                    </div>
+                    <div className="td-build-copy content-text">
+                        <span>Click a highlighted pad</span>
+                        <span>R or wheel rotates</span>
+                        <span>Right-click or Esc cancels</span>
+                    </div>
+                    <div className="td-legend content-text">
+                        <span>
+                            <i className="td-legend-range" />
+                            Attack range
+                        </span>
+                        <span>
+                            <i className="td-legend-invalid" />
+                            Cannot place
+                        </span>
+                    </div>
                 </div>
-                <div className="td-legend content-text">
-                    <span>
-                        <i className="td-legend-node" />
-                        Route Node
-                    </span>
-                    <span>
-                        <i className="td-legend-range" />
-                        Tower Range
-                    </span>
-                    <span>
-                        <i className="td-legend-preview" />
-                        Tower Preview
-                    </span>
-                    <span>
-                        <i className="td-legend-invalid" />
-                        Invalid Placement
-                    </span>
-                </div>
-            </div>
+            )}
 
-            <div className="td-right-rail">
+            <div
+                className="td-right-rail td-draggable-panel"
+                style={getPanelStyle("rightRail", getRightRailPosition())}
+            >
+                <div
+                    className="td-rail-drag-handle td-drag-handle rs-border rs-background"
+                    onMouseDown={(event) =>
+                        onPanelDragStart("rightRail", event, getRightRailPosition())
+                    }
+                >
+                    <span className="td-drag-grip" aria-hidden="true" />
+                </div>
                 <div className="td-hud rs-border rs-background">
                     <div className="td-header">Lumbridge Defense</div>
                     <div className="td-stats content-text">
                         <span className="td-stat-wave">
                             <span>Wave {state.wave}</span>
                         </span>
-                    <span className="td-stat-gold">
-                        <img
-                            className="td-stat-icon td-stat-image"
-                            src={coinsIcon}
-                            alt=""
-                            aria-hidden="true"
-                        />
-                        <span>Gold {state.gold}</span>
-                    </span>
-                    <span className="td-stat-hitpoints">
-                        <img
-                            className="td-stat-icon td-stat-image"
-                            src={hitpointsIcon}
-                            alt=""
-                            aria-hidden="true"
-                        />
-                        <span>Hitpoints {state.lives}</span>
-                    </span>
-                </div>
-                    <div className="td-summary-list content-text">
-                        <div className="td-summary-row muted">
-                            <span>Next Wave</span>
-                            <span>None</span>
-                        </div>
+                        <span className="td-stat-gold">
+                            <img
+                                className="td-stat-icon td-stat-image"
+                                src={coinsIcon}
+                                alt=""
+                                aria-hidden="true"
+                            />
+                            <span>Gold {state.gold}</span>
+                        </span>
+                        <span className="td-stat-hitpoints">
+                            <img
+                                className="td-stat-icon td-stat-image"
+                                src={hitpointsIcon}
+                                alt=""
+                                aria-hidden="true"
+                            />
+                            <span>Hitpoints {state.lives}</span>
+                        </span>
+                    </div>
+                    <div className="td-phase-strip content-text">
+                        <span>{state.waveInProgress ? "Combat Phase" : "Build Phase"}</span>
+                        <span>
+                            {state.waveSpawned}/{state.waveSpawnCount} spawned
+                        </span>
                     </div>
                     <button
                         className="td-start-button"
@@ -590,21 +1087,89 @@ export function LumbridgeTowerDefenseOverlay({
                             className={`td-button ${routeEditorOpen ? "selected" : ""}`}
                             onClick={() => setRouteEditorOpen((open) => !open)}
                         >
-                            <span>{routeEditorOpen ? "Close Route" : "Edit Route"}</span>
+                            <span>{routeEditorOpen ? "Close Editor" : "Level Editor"}</span>
                             <span>{routeDraft.length} pts</span>
+                        </button>
+                        <button
+                            className={`td-button ${cameraMode === "line" ? "selected" : ""}`}
+                            onClick={() =>
+                                setCameraMode((mode) => (mode === "line" ? "target" : "line"))
+                            }
+                        >
+                            <span>Line view</span>
+                            <span>{cameraMode === "line" ? "On" : "Off"}</span>
                         </button>
                     </div>
                     <div className="td-footer content-text">
-                        <span>
-                            {state.waveInProgress
-                                ? `${state.waveSpawned}/${state.waveSpawnCount} spawned`
-                                : state.gameOver
-                                ? "Lumbridge fell"
-                                : `${state.waveSpawned}/${state.waveSpawnCount} spawned`}
-                        </span>
-                        <span>{state.waveInProgress ? "Combat Phase" : "Build Phase"}</span>
+                        <span>{state.gameOver ? "Lumbridge fell" : "Towers and route tools"}</span>
+                        <span>{routeDraft.length} route pts</span>
                     </div>
                 </div>
+
+                {selectedTower && selectedTowerDef && selectedTowerStats && (
+                    <div
+                        className="td-tower-card rs-border rs-background"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="td-tower-card-header">
+                            <div>
+                                <div className="td-header">{selectedTowerDef.name}</div>
+                                <div className="td-tower-card-subtitle content-text">
+                                    Level {selectedTower.level} / {TOWER_MAX_LEVEL}
+                                </div>
+                            </div>
+                            <button className="td-close-button" onClick={onDeselectTower}>
+                                ×
+                            </button>
+                        </div>
+                        <div className="td-tower-stat-grid content-text">
+                            <div className="td-tower-stat-row">
+                                <span>Damage</span>
+                                <span>
+                                    {selectedTowerStats.damage}
+                                    {nextTowerStats && <em> -&gt; {nextTowerStats.damage}</em>}
+                                </span>
+                            </div>
+                            <div className="td-tower-stat-row">
+                                <span>Attack Speed</span>
+                                <span>
+                                    {(1000 / selectedTowerStats.cooldownMs).toFixed(2)}/s
+                                    {nextTowerStats && (
+                                        <em>
+                                            {" "}
+                                            -&gt; {(1000 / nextTowerStats.cooldownMs).toFixed(2)}/s
+                                        </em>
+                                    )}
+                                </span>
+                            </div>
+                            <div className="td-tower-stat-row">
+                                <span>Range</span>
+                                <span>
+                                    {(selectedTowerStats.range * 64).toFixed(1)} tiles
+                                    {nextTowerStats && (
+                                        <em> -&gt; {(nextTowerStats.range * 64).toFixed(1)}</em>
+                                    )}
+                                </span>
+                            </div>
+                            <div className="td-tower-stat-row">
+                                <span>Pad</span>
+                                <span>{selectedTower.padId.replace(/-/g, " ")}</span>
+                            </div>
+                        </div>
+                        <button
+                            className="td-upgrade-button"
+                            disabled={
+                                selectedTowerUpgradeCost === undefined ||
+                                state.gold < selectedTowerUpgradeCost
+                            }
+                            onClick={onUpgradeSelectedTower}
+                        >
+                            {selectedTowerUpgradeCost === undefined
+                                ? "Max Level"
+                                : `Upgrade ${selectedTowerUpgradeCost}g`}
+                        </button>
+                    </div>
+                )}
 
                 <div className="td-shop rs-border rs-background">
                     <div className="td-tabs content-text">
@@ -664,113 +1229,6 @@ export function LumbridgeTowerDefenseOverlay({
                         </div>
                     </div>
                 </div>
-
-                {routeEditorOpen && (
-                    <div className="td-route-editor rs-border rs-background">
-                        <div className="td-route-head">
-                            <div className="td-header">Route Drawer</div>
-                            <select
-                                className="td-route-select"
-                                value="default"
-                                onChange={() => resetRoute()}
-                            >
-                                <option value="default">Default</option>
-                            </select>
-                        </div>
-                        <div className="td-route-actions">
-                            <button
-                                className="td-button"
-                                onClick={undoRoutePoint}
-                                disabled={routeDraft.length === 0}
-                            >
-                                <span>Undo</span>
-                            </button>
-                            <button className="td-button" onClick={resetRoute}>
-                                <span>Redo</span>
-                            </button>
-                            <button
-                                className="td-button"
-                                onClick={clearRoute}
-                                disabled={routeDraft.length === 0}
-                            >
-                                <span>Clear</span>
-                            </button>
-                            <button className="td-button" onClick={resetRoute}>
-                                <span>Default</span>
-                            </button>
-                        </div>
-                        <div className="td-route-help content-text">
-                            Left-click to add node. Right-click to remove node. Drag to move
-                            existing nodes.
-                        </div>
-                        <div
-                            className="td-route-map"
-                            onClick={onRouteEditorClick}
-                            ref={routeEditorRef}
-                        >
-                            {routeImageUrl ? (
-                                <img
-                                    alt="Lumbridge route editor"
-                                    className="td-route-map-image"
-                                    src={routeImageUrl}
-                                />
-                            ) : (
-                                <div className="td-route-map-loading content-text">
-                                    Loading map...
-                                </div>
-                            )}
-                            <div className="td-route-map-overlay">
-                                {routeDraftPoints.length >= 2 && (
-                                    <svg
-                                        className="td-route-map-line"
-                                        viewBox="0 0 100 100"
-                                        preserveAspectRatio="none"
-                                    >
-                                        <polyline
-                                            className={`td-route-polyline ${
-                                                state.waveInProgress ? "active" : "idle"
-                                            }`}
-                                            points={routeDraftPoints
-                                                .map((point) => `${point.x * 100},${point.y * 100}`)
-                                                .join(" ")}
-                                        />
-                                    </svg>
-                                )}
-                                {routeDraft.map((point, index) => {
-                                    const marker = routeDraftPoints[index];
-                                    const tileSize = 100 / 64;
-                                    return (
-                                        <div
-                                            key={`${point.x}-${point.y}-${index}`}
-                                            style={{ display: "contents" }}
-                                        >
-                                            <div
-                                                className={`td-route-tile ${
-                                                    state.waveInProgress ? "active" : "idle"
-                                                }`}
-                                                style={{
-                                                    left: `${point.x * tileSize}%`,
-                                                    top: `${point.y * tileSize}%`,
-                                                    width: `${tileSize}%`,
-                                                    height: `${tileSize}%`,
-                                                }}
-                                            />
-                                            <div
-                                                className="td-route-point"
-                                                style={{
-                                                    left: `${marker.x * 100}%`,
-                                                    top: `${marker.y * 100}%`,
-                                                }}
-                                            >
-                                                <span>{index + 1}</span>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    </div>
-                )}
             </div>
 
             <div className="td-playfield">
@@ -808,7 +1266,7 @@ export function LumbridgeTowerDefenseOverlay({
                                     buildMode ? "build-active" : ""
                                 } ${hoveredPadId === pad.id ? "hovered" : ""} ${
                                     pad.disabled ? "disabled" : ""
-                                }`}
+                                } ${pad.towerId === state.selectedTowerId ? "selected" : ""}`}
                             >
                                 <polygon
                                     className="td-world-pad-range"
@@ -825,7 +1283,14 @@ export function LumbridgeTowerDefenseOverlay({
                                             current === pad.id ? undefined : current,
                                         )
                                     }
-                                    onClick={() => onPlaceTower(pad.id)}
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (pad.built && pad.towerId) {
+                                            onSelectPlacedTower(pad.towerId);
+                                            return;
+                                        }
+                                        onPlaceTower(pad.id);
+                                    }}
                                 />
                                 <text
                                     className="td-world-pad-label"
@@ -834,7 +1299,7 @@ export function LumbridgeTowerDefenseOverlay({
                                     textAnchor="middle"
                                     dominantBaseline="middle"
                                 >
-                                    +
+                                    {pad.built ? pad.level : "+"}
                                 </text>
                             </g>
                         ))}
@@ -1028,11 +1493,330 @@ export function LumbridgeTowerDefenseOverlay({
                 </div>
             )}
 
+            {routeEditorOpen && (
+                <div
+                    className="td-route-editor td-route-popout td-draggable-panel rs-border rs-background"
+                    style={getPanelStyle("levelEditor", { x: 140, y: 92 })}
+                >
+                    <div
+                        className="td-route-head td-drag-handle"
+                        onMouseDown={(event) =>
+                            onPanelDragStart("levelEditor", event, { x: 140, y: 92 })
+                        }
+                    >
+                        <div>
+                            <div className="td-header">Level Editor</div>
+                            <div className="td-route-subtitle content-text">
+                                Route and wave setup
+                            </div>
+                        </div>
+                        <div className="td-route-head-actions">
+                            <span className="td-drag-grip" aria-hidden="true" />
+                            <button
+                                className="td-close-button"
+                                onClick={() => setRouteEditorOpen(false)}
+                            >
+                                ×
+                            </button>
+                        </div>
+                    </div>
+                    <div className="td-route-editor-body">
+                        <div className="td-route-actions">
+                            <button
+                                className="td-button"
+                                onClick={undoRoutePoint}
+                                disabled={routeDraft.length === 0}
+                            >
+                                <span>Undo</span>
+                            </button>
+                            <button
+                                className="td-button"
+                                onClick={removeSelectedRoutePoint}
+                                disabled={selectedRoutePointIndex === undefined}
+                            >
+                                <span>Delete</span>
+                            </button>
+                            <button
+                                className="td-button"
+                                onClick={clearRoute}
+                                disabled={routeDraft.length === 0}
+                            >
+                                <span>Clear</span>
+                            </button>
+                            <button className="td-button" onClick={resetRoute}>
+                                <span>Default</span>
+                            </button>
+                            <button className="td-button" onClick={reverseRoute}>
+                                <span>Reverse</span>
+                            </button>
+                            <button className="td-button" onClick={copyRouteToClipboard}>
+                                <span>Copy JSON</span>
+                            </button>
+                        </div>
+                        <div className="td-route-help content-text">
+                            Click map to insert after selected node. Drag numbered nodes to move
+                            them.
+                        </div>
+                        <div
+                            className="td-route-map"
+                            onClick={onRouteEditorClick}
+                            ref={routeEditorRef}
+                        >
+                            {routeImageUrl ? (
+                                <img
+                                    alt="Lumbridge route editor"
+                                    className="td-route-map-image"
+                                    src={routeImageUrl}
+                                />
+                            ) : (
+                                <div className="td-route-map-loading content-text">
+                                    Loading map...
+                                </div>
+                            )}
+                            <div className="td-route-map-overlay">
+                                {routeDraftPoints.length >= 2 && (
+                                    <svg
+                                        className="td-route-map-line"
+                                        viewBox="0 0 100 100"
+                                        preserveAspectRatio="none"
+                                    >
+                                        <polyline
+                                            className={`td-route-polyline ${
+                                                state.waveInProgress ? "active" : "idle"
+                                            }`}
+                                            points={routeDraftPoints
+                                                .map((point) => `${point.x * 100},${point.y * 100}`)
+                                                .join(" ")}
+                                        />
+                                    </svg>
+                                )}
+                                {routeDraft.map((point, index) => {
+                                    const marker = routeDraftPoints[index];
+                                    const tileSize = 100 / 64;
+                                    return (
+                                        <div
+                                            key={`${point.x}-${point.y}-${index}`}
+                                            style={{ display: "contents" }}
+                                        >
+                                            <div
+                                                className={`td-route-tile ${
+                                                    state.waveInProgress ? "active" : "idle"
+                                                }`}
+                                                style={{
+                                                    left: `${point.x * tileSize}%`,
+                                                    top: `${point.y * tileSize}%`,
+                                                    width: `${tileSize}%`,
+                                                    height: `${tileSize}%`,
+                                                }}
+                                            />
+                                            <div
+                                                className={`td-route-point ${
+                                                    selectedRoutePointIndex === index
+                                                        ? "selected"
+                                                        : ""
+                                                }`}
+                                                style={{
+                                                    left: `${marker.x * 100}%`,
+                                                    top: `${marker.y * 100}%`,
+                                                }}
+                                                onMouseDown={(event) =>
+                                                    onRoutePointMouseDown(event, index)
+                                                }
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    setSelectedRoutePointIndex(index);
+                                                }}
+                                            >
+                                                <span>{index + 1}</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                        <div className="td-route-selected content-text">
+                            {selectedRoutePointIndex === undefined
+                                ? `${routeDraft.length} nodes. Select a node to insert or delete around it.`
+                                : `Node ${selectedRoutePointIndex + 1}: x ${routeDraft[
+                                      selectedRoutePointIndex
+                                  ]?.x}, y ${routeDraft[selectedRoutePointIndex]?.y}`}
+                        </div>
+
+                        <div className="td-wave-editor">
+                            <div className="td-wave-editor-head">
+                                <div>
+                                    <div className="td-header">Wave Composer</div>
+                                    <div className="td-route-subtitle content-text">
+                                        {getWaveEnemyCount(activeWaveConfig)} enemies,{" "}
+                                        {activeWaveConfig.spawnIntervalMs}ms spacing
+                                    </div>
+                                </div>
+                                <div className="td-wave-stepper">
+                                    <button
+                                        className="td-mini-button"
+                                        onClick={() =>
+                                            setSelectedWaveNumber((waveNumber) =>
+                                                Math.max(1, waveNumber - 1),
+                                            )
+                                        }
+                                    >
+                                        -
+                                    </button>
+                                    <span>Wave {selectedWaveNumber}</span>
+                                    <button
+                                        className="td-mini-button"
+                                        onClick={() =>
+                                            setSelectedWaveNumber((waveNumber) => waveNumber + 1)
+                                        }
+                                    >
+                                        +
+                                    </button>
+                                </div>
+                            </div>
+                            <label className="td-wave-field content-text">
+                                <span>Spawn spacing</span>
+                                <input
+                                    type="number"
+                                    min={120}
+                                    max={3000}
+                                    step={20}
+                                    value={activeWaveConfig.spawnIntervalMs}
+                                    onChange={(event) =>
+                                        setSelectedWaveConfig({
+                                            ...activeWaveConfig,
+                                            spawnIntervalMs: Number(event.target.value),
+                                        })
+                                    }
+                                />
+                            </label>
+                            <div className="td-wave-enemy-list">
+                                {LUMBRIDGE_TD_ENEMY_ARCHETYPES.map((archetype) => {
+                                    const enemyConfig = activeWaveConfig.enemies.find(
+                                        (enemy) => enemy.archetypeName === archetype.name,
+                                    ) ?? {
+                                        archetypeName: archetype.name,
+                                        count: 0,
+                                        hpMultiplier: 1,
+                                        speedMultiplier: 1,
+                                        rewardMultiplier: 1,
+                                    };
+                                    return (
+                                        <div key={archetype.name} className="td-wave-enemy-row">
+                                            <div
+                                                className="td-wave-enemy-swatch"
+                                                style={{
+                                                    backgroundColor: archetype.color,
+                                                    borderColor: archetype.outline,
+                                                }}
+                                            />
+                                            <div className="td-wave-enemy-main content-text">
+                                                <div className="td-wave-enemy-title">
+                                                    <span>{archetype.name}</span>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        max={99}
+                                                        value={enemyConfig.count}
+                                                        onChange={(event) =>
+                                                            updateWaveEnemyCount(
+                                                                archetype.name,
+                                                                Number(event.target.value),
+                                                            )
+                                                        }
+                                                    />
+                                                </div>
+                                                <div className="td-wave-multis">
+                                                    <label>
+                                                        HP
+                                                        <input
+                                                            type="number"
+                                                            min={0.1}
+                                                            max={10}
+                                                            step={0.1}
+                                                            value={enemyConfig.hpMultiplier}
+                                                            onChange={(event) =>
+                                                                updateWaveEnemyMultiplier(
+                                                                    archetype.name,
+                                                                    "hpMultiplier",
+                                                                    Number(event.target.value),
+                                                                )
+                                                            }
+                                                        />
+                                                    </label>
+                                                    <label>
+                                                        SPD
+                                                        <input
+                                                            type="number"
+                                                            min={0.1}
+                                                            max={10}
+                                                            step={0.1}
+                                                            value={enemyConfig.speedMultiplier}
+                                                            onChange={(event) =>
+                                                                updateWaveEnemyMultiplier(
+                                                                    archetype.name,
+                                                                    "speedMultiplier",
+                                                                    Number(event.target.value),
+                                                                )
+                                                            }
+                                                        />
+                                                    </label>
+                                                    <label>
+                                                        GP
+                                                        <input
+                                                            type="number"
+                                                            min={0.1}
+                                                            max={10}
+                                                            step={0.1}
+                                                            value={enemyConfig.rewardMultiplier}
+                                                            onChange={(event) =>
+                                                                updateWaveEnemyMultiplier(
+                                                                    archetype.name,
+                                                                    "rewardMultiplier",
+                                                                    Number(event.target.value),
+                                                                )
+                                                            }
+                                                        />
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            <div className="td-route-actions">
+                                <button className="td-button" onClick={resetSelectedWaveConfig}>
+                                    <span>Default Wave</span>
+                                </button>
+                                <button
+                                    className="td-button"
+                                    onClick={() =>
+                                        setSelectedWaveConfig(
+                                            createDefaultWaveConfig(selectedWaveNumber),
+                                        )
+                                    }
+                                >
+                                    <span>Rebuild Defaults</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {state.showEnemyInfo && state.selectedEnemy && (
-                <div className="td-enemy-info-overlay">
+                <div
+                    className="td-enemy-info-overlay td-draggable-panel"
+                    style={getPanelStyle("enemyInfo", { x: 14, y: 14 })}
+                >
                     <div className="td-enemy-info rs-border rs-background">
-                        <div className="td-enemy-info-header">
+                        <div
+                            className="td-enemy-info-header td-drag-handle"
+                            onMouseDown={(event) =>
+                                onPanelDragStart("enemyInfo", event, { x: 14, y: 14 })
+                            }
+                        >
                             <div className="td-header">{state.selectedEnemy.archetype.name}</div>
+                            <span className="td-drag-grip" aria-hidden="true" />
                             <button className="td-close-button" onClick={onDeselectEnemy}>
                                 ×
                             </button>
