@@ -37,7 +37,7 @@ jobs:
               run: npm install --legacy-peer-deps --no-fund --no-audit
 
             - name: Download cache data
-              run: node scripts/download-caches.js 1
+              run: node scripts/download-caches.js osrs-235_2025-11-05
 
             - name: Stage cache data for Pages
               run: |

@@ -30,7 +30,7 @@ function askQuestion(query) {
     );
 }
 
-async function downloadCaches(count) {
+async function downloadCaches(count, cacheName) {
     // renameCacheDirs();
     if (!fs.existsSync("caches/")) {
         fs.mkdirSync("caches/", { recursive: true });
@@ -86,6 +86,9 @@ async function downloadCaches(count) {
     for (let i = 0; i < count && i < caches.length; i++) {
         const cache = caches[i];
         const cacheDir = getCacheDir(cache);
+        if (cacheName && cacheDir.replace(/\/$/, "") !== cacheName) {
+            continue;
+        }
         if (fs.existsSync(cacheDir + "info.json")) {
             const oldCache = JSON.parse(fs.readFileSync(cacheDir + "info.json"));
             if (
@@ -297,15 +300,18 @@ function createCacheList() {
 }
 
 let downloadCount = 1;
+let downloadCacheName;
 if (process.argv.length > 2) {
     const countArg = process.argv[2];
     if (countArg === "all") {
         downloadCount = Number.MAX_SAFE_INTEGER;
-    } else {
+    } else if (Number.isFinite(Number(countArg))) {
         downloadCount = parseInt(countArg);
+    } else {
+        downloadCacheName = countArg;
     }
 }
 
-downloadCaches(downloadCount).then(() => {
+downloadCaches(downloadCount, downloadCacheName).then(() => {
     process.exit(0);
 });
