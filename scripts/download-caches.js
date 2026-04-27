@@ -30,7 +30,7 @@ function askQuestion(query) {
     );
 }
 
-async function downloadCaches(count, cacheName) {
+async function downloadCaches(count, cacheName, cacheId) {
     // renameCacheDirs();
     if (!fs.existsSync("caches/")) {
         fs.mkdirSync("caches/", { recursive: true });
@@ -83,12 +83,16 @@ async function downloadCaches(count, cacheName) {
     const cachesToDownload = [];
     let totalBytes = 0;
 
-    let cachesToConsider = cacheName
-        ? caches.filter((cache) => getCacheDir(cache).replace(/\/$/, "") === cacheName)
+    let cachesToConsider = cacheId
+        ? caches.filter((cache) => cache.id === cacheId)
+        : cacheName
+          ? caches.filter((cache) => getCacheDir(cache).replace(/\/$/, "") === cacheName)
         : caches.slice(0, count);
 
-    if (cacheName && cachesToConsider.length === 0) {
-        console.warn(`Cache not found: ${cacheName}, falling back to newest valid cache`);
+    if ((cacheName || cacheId) && cachesToConsider.length === 0) {
+        console.warn(
+            `Cache not found: ${cacheId ?? cacheName}, falling back to newest valid cache`,
+        );
         cachesToConsider = caches.slice(0, count);
     }
 
@@ -306,17 +310,25 @@ function createCacheList() {
 
 let downloadCount = 1;
 let downloadCacheName;
+let downloadCacheId;
 if (process.argv.length > 2) {
-    const countArg = process.argv[2];
-    if (countArg === "all") {
-        downloadCount = Number.MAX_SAFE_INTEGER;
-    } else if (Number.isFinite(Number(countArg))) {
-        downloadCount = parseInt(countArg);
-    } else {
-        downloadCacheName = countArg;
+    const args = process.argv.slice(2);
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "all") {
+            downloadCount = Number.MAX_SAFE_INTEGER;
+        } else if (arg === "--cache-id") {
+            downloadCacheId = parseInt(args[++i]);
+        } else if (arg === "--cache-name") {
+            downloadCacheName = args[++i];
+        } else if (Number.isFinite(Number(arg))) {
+            downloadCount = parseInt(arg);
+        } else {
+            downloadCacheName = arg;
+        }
     }
 }
 
-downloadCaches(downloadCount, downloadCacheName).then(() => {
+downloadCaches(downloadCount, downloadCacheName, downloadCacheId).then(() => {
     process.exit(0);
 });
