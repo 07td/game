@@ -1,5 +1,5 @@
 import Denque from "denque";
-import { vec2, vec4 } from "gl-matrix";
+import { mat4, vec2, vec3, vec4 } from "gl-matrix";
 import { folder } from "leva";
 import { Schema } from "leva/dist/declarations/src/types";
 import {
@@ -19,21 +19,53 @@ import {
 import { OsrsMenuEntry } from "../../components/rs/menu/OsrsMenu";
 import { createTextureArray } from "../../picogl/PicoTexture";
 import { MenuTargetType } from "../../rs/MenuEntry";
+import { LocModelLoader } from "../../rs/config/loctype/LocModelLoader";
+import { LocModelType } from "../../rs/config/loctype/LocModelType";
+import { Model } from "../../rs/model/Model";
 import { Scene } from "../../rs/scene/Scene";
 import { isTouchDevice, isWebGL2Supported, pixelRatio } from "../../util/DeviceUtil";
 import { MapViewer } from "../MapViewer";
 import { MapViewerRenderer } from "../MapViewerRenderer";
 import { MapViewerRendererType, WEBGL } from "../MapViewerRenderers";
+import {
+    LUMBRIDGE_TD_ENEMY_REMOVED,
+    LUMBRIDGE_TD_ENEMY_SELECTED,
+    LUMBRIDGE_TD_ENEMY_SPAWNED,
+    LUMBRIDGE_TD_ENEMY_UPDATED,
+    LUMBRIDGE_TD_RESET,
+    LUMBRIDGE_TD_START_WAVE,
+    LUMBRIDGE_TD_TOWERS_CHANGED,
+    LumbridgeTdEnemySpawnDetail,
+    LumbridgeTdEnemyUpdateDetail,
+    LumbridgeTdTowerState,
+} from "../td/lumbridgeTdEvents";
+import {
+    LUMBRIDGE_TD_MAP_X,
+    LUMBRIDGE_TD_MAP_Y,
+    LUMBRIDGE_TD_ROUTE_CHANGED,
+    LumbridgeTdRoutePoint,
+    getLumbridgeTdRoute,
+} from "../td/lumbridgeTdRoute";
+import { AnimationFrames } from "./AnimationFrames";
 import { DrawRange, NULL_DRAW_RANGE } from "./DrawRange";
 import { InteractType } from "./InteractType";
 import { Interactions } from "./Interactions";
 import { WebGLMapSquare } from "./WebGLMapSquare";
+import {
+    ContourGroundType,
+    DrawCommand,
+    SceneBuffer,
+    SceneModel,
+    createModelInfoTextureData,
+} from "./buffer/SceneBuffer";
 import { SdMapData } from "./loader/SdMapData";
 import { SdMapDataLoader } from "./loader/SdMapDataLoader";
 import { SdMapLoaderInput } from "./loader/SdMapLoaderInput";
+import { Npc } from "./npc/Npc";
 import {
     FRAME_FXAA_PROGRAM,
     FRAME_PROGRAM,
+    TD_ROUTE_PROGRAM,
     createMainProgram,
     createNpcProgram,
 } from "./shaders/Shaders";
@@ -44,6 +76,11 @@ const TEXTURE_SIZE = 128;
 const INTERACT_BUFFER_COUNT = 2;
 const INTERACTION_RADIUS = 5;
 
+const TD_TOWER_LOC_IDS: Record<string, number> = {
+    bolt: 1939,
+    cannon: 1939,
+    mage: 1939,
+};
 interface ColorRgb {
     r: number;
     g: number;
@@ -102,6 +139,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     mainProgram?: Program;
     mainAlphaProgram?: Program;
     npcProgram?: Program;
+    tdRouteProgram?: Program;
+    tdCannonProgram?: Program;
     frameProgram?: Program;
     frameFxaaProgram?: Program;
 
@@ -171,6 +210,29 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     npcRenderData: Uint16Array = new Uint16Array(16 * 4);
 
     npcDataTextureBuffer: (Texture | undefined)[] = new Array(5);
+    tdPendingSpawnCount: number = 0;
+    tdEnemies: Map<string, LumbridgeTdEnemySpawnDetail> = new Map();
+    tdRoutePositions?: VertexBuffer;
+    tdRouteArray?: VertexArray;
+    tdRouteDrawCall?: DrawCall;
+    tdRouteVertexCount: number = 0;
+    tdRouteDirty: boolean = true;
+    tdCannonModel?: Model;
+    tdTowerLocModelLoader?: LocModelLoader;
+    tdCannonInterleavedBuffer?: VertexBuffer;
+    tdCannonIndexBuffer?: any;
+    tdCannonModelInfoTexture?: Texture;
+    tdCannonVertexArray?: VertexArray;
+    tdCannonIndexCount: number = 0;
+    tdCannonDrawCall?: DrawCall;
+    tdCannonGroundOffset: number = 0;
+    tdCannonDirty: boolean = true;
+    tdCannonPlacements: Array<{
+        padId: string;
+        world: vec3;
+        kind: string;
+        rotation: number;
+    }> = [];
 
     constructor(public mapViewer: MapViewer) {
         super(mapViewer);
@@ -186,6 +248,16 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
     async init(): Promise<void> {
         await super.init();
+        window.addEventListener(LUMBRIDGE_TD_START_WAVE, this.onTdStartWave as EventListener);
+        window.addEventListener(LUMBRIDGE_TD_RESET, this.onTdReset);
+        window.addEventListener(LUMBRIDGE_TD_ROUTE_CHANGED, this.onTdRouteChanged as EventListener);
+        window.addEventListener(
+            LUMBRIDGE_TD_TOWERS_CHANGED,
+            this.onTdTowersChanged as EventListener,
+        );
+        window.addEventListener(LUMBRIDGE_TD_ENEMY_SPAWNED, this.onTdEnemySpawned as EventListener);
+        window.addEventListener(LUMBRIDGE_TD_ENEMY_UPDATED, this.onTdEnemyUpdated as EventListener);
+        window.addEventListener(LUMBRIDGE_TD_ENEMY_REMOVED, this.onTdEnemyRemoved as EventListener);
 
         this.app = PicoGL.createApp(this.canvas);
         this.gl = this.app.gl as WebGL2RenderingContext;
@@ -244,6 +316,88 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         console.log("Renderer init");
     }
 
+    onTdStartWave = (event: CustomEvent<{ enemyCount: number }>) => {
+        // Disable old wave-based spawning - we now use individual enemy spawn events
+        // this.tdPendingSpawnCount = event.detail.enemyCount;
+    };
+
+    onTdReset = () => {
+        this.tdPendingSpawnCount = 0;
+        this.tdEnemies.clear();
+        for (let i = 0; i < this.mapManager.visibleMapCount; i++) {
+            this.resetTdEnemies(this.mapManager.visibleMaps[i]);
+        }
+    };
+
+    onTdEnemySpawned = (event: CustomEvent<LumbridgeTdEnemySpawnDetail>) => {
+        const enemy = event.detail;
+        this.tdEnemies.set(enemy.id, { ...enemy });
+
+        // Spawn the actual NPC in the map
+        const tdMap = this.mapManager.getMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
+        if (tdMap) {
+            if (!this.spawnTdNpc(tdMap, enemy)) {
+                this.reloadTdMapForNpcPool(tdMap, enemy.npcId);
+            }
+        }
+    };
+
+    onTdEnemyUpdated = (event: CustomEvent<LumbridgeTdEnemyUpdateDetail>) => {
+        const update = event.detail;
+        const enemy = this.tdEnemies.get(update.id);
+        if (enemy) {
+            enemy.x = update.x;
+            enemy.y = update.y;
+            enemy.hp = update.hp;
+            enemy.maxHp = update.maxHp;
+
+            // Update the NPC position in the map
+            const tdMap = this.mapManager.getMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
+            if (tdMap) {
+                this.updateTdNpcPosition(tdMap, update);
+            }
+        }
+    };
+
+    onTdEnemyRemoved = (event: CustomEvent<{ id: string }>) => {
+        const enemyId = event.detail.id;
+        this.tdEnemies.delete(enemyId);
+
+        // Remove the NPC from the map
+        const tdMap = this.mapManager.getMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
+        if (tdMap) {
+            this.removeTdNpc(tdMap, enemyId);
+        }
+    };
+
+    onTdRouteChanged = (event: CustomEvent<LumbridgeTdRoutePoint[]>) => {
+        const route = event.detail;
+        const tdMap = this.mapManager.getMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
+        this.tdRouteDirty = true;
+        if (!tdMap) {
+            return;
+        }
+        for (const npc of tdMap.npcs) {
+            if (!npc.tdRoute) {
+                continue;
+            }
+            npc.tdRoute = route.map((point) => ({ ...point }));
+        }
+        this.resetTdEnemies(tdMap);
+    };
+
+    onTdTowersChanged = (event: CustomEvent<LumbridgeTdTowerState>) => {
+        this.tdCannonPlacements = event.detail
+            .filter((tower) => tower.world && TD_TOWER_LOC_IDS[tower.kind] !== undefined)
+            .map((tower) => ({
+                padId: tower.padId,
+                kind: tower.kind,
+                rotation: tower.rotation ?? 0,
+                world: vec3.fromValues(tower.world.x, tower.world.y, tower.world.z),
+            }));
+        this.tdCannonDirty = true;
+    };
+
     async initShaders(): Promise<Program[]> {
         const hasMultiDraw = this.hasMultiDraw;
 
@@ -251,15 +405,23 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             createMainProgram(hasMultiDraw, false),
             createMainProgram(hasMultiDraw, true),
             createNpcProgram(hasMultiDraw, true),
+            TD_ROUTE_PROGRAM,
             FRAME_PROGRAM,
             FRAME_FXAA_PROGRAM,
         );
 
-        const [mainProgram, mainAlphaProgram, npcProgram, frameProgram, frameFxaaProgram] =
-            programs;
+        const [
+            mainProgram,
+            mainAlphaProgram,
+            npcProgram,
+            tdRouteProgram,
+            frameProgram,
+            frameFxaaProgram,
+        ] = programs;
         this.mainProgram = mainProgram;
         this.mainAlphaProgram = mainAlphaProgram;
         this.npcProgram = npcProgram;
+        this.tdRouteProgram = tdRouteProgram;
         this.frameProgram = frameProgram;
         this.frameFxaaProgram = frameFxaaProgram;
 
@@ -650,6 +812,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             maxLevel: this.maxLevel,
             loadObjs: this.loadObjs,
             loadNpcs: this.loadNpcs,
+            tdOnlyNpcs: this.mapViewer.pinnedView,
             smoothTerrain: this.smoothTerrain,
             minimizeDrawCalls: !this.hasMultiDraw,
             loadedTextureIds: this.loadedTextureIds,
@@ -685,25 +848,29 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         );
 
         const frameCount = this.stats.frameCount;
-        this.mapManager.addMap(
-            mapX,
-            mapY,
-            WebGLMapSquare.load(
-                this.mapViewer.seqTypeLoader,
-                this.mapViewer.npcTypeLoader,
-                this.mapViewer.basTypeLoader,
-                this.app,
-                mainProgram,
-                mainAlphaProgram,
-                npcProgram,
-                textureArray,
-                textureMaterials,
-                sceneUniformBuffer,
-                mapData,
-                time,
-                frameCount,
-            ),
+        const mapSquare = WebGLMapSquare.load(
+            this.mapViewer.seqTypeLoader,
+            this.mapViewer.npcTypeLoader,
+            this.mapViewer.basTypeLoader,
+            this.app,
+            mainProgram,
+            mainAlphaProgram,
+            npcProgram,
+            textureArray,
+            textureMaterials,
+            sceneUniformBuffer,
+            mapData,
+            time,
+            frameCount,
         );
+        this.mapManager.addMap(mapX, mapY, mapSquare);
+
+        if (mapX === LUMBRIDGE_TD_MAP_X && mapY === LUMBRIDGE_TD_MAP_Y) {
+            this.resetTdEnemies(mapSquare);
+            for (const enemy of this.tdEnemies.values()) {
+                this.spawnTdNpc(mapSquare, enemy);
+            }
+        }
 
         this.updateTextureArray(mapData.loadedTextures);
     }
@@ -714,6 +881,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             mapData.maxLevel === this.maxLevel &&
             mapData.loadObjs === this.loadObjs &&
             mapData.loadNpcs === this.loadNpcs &&
+            mapData.tdOnlyNpcs === this.mapViewer.pinnedView &&
             mapData.smoothTerrain === this.smoothTerrain
         );
     }
@@ -898,6 +1066,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.renderOpaqueNpcPass(npcDataTextureIndex, npcDataTexture);
         const opaqueNpcPassTime = performance.now() - opaqueNpcPassStart;
 
+        const tdCannonPassStart = performance.now();
+        this.renderTdCannonPass();
+        const tdCannonPassTime = performance.now() - tdCannonPassStart;
+
         this.app.enable(PicoGL.BLEND);
         const transparentPassStart = performance.now();
         this.renderTransparentPass();
@@ -1016,6 +1188,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.npcRenderCount = 0;
         for (let i = 0; i < this.mapManager.visibleMapCount; i++) {
             const map = this.mapManager.visibleMaps[i];
+            this.syncTdEnemies(map);
 
             for (const loc of map.locsAnimated) {
                 loc.update(seqFrameLoader, cycle);
@@ -1075,6 +1248,386 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
             this.npcRenderCount++;
         }
+    }
+
+    syncTdEnemies(map: WebGLMapSquare): void {
+        if (map.mapX !== LUMBRIDGE_TD_MAP_X || map.mapY !== LUMBRIDGE_TD_MAP_Y) {
+            return;
+        }
+
+        if (this.tdPendingSpawnCount <= 0) {
+            return;
+        }
+
+        this.resetTdEnemies(map);
+        const tdNpcs = map.npcs.filter((npc) => npc.tdRoute);
+        const spawnCount = Math.min(this.tdPendingSpawnCount, tdNpcs.length);
+        for (let i = 0; i < spawnCount; i++) {
+            tdNpcs[i].tdCompleted = false;
+            tdNpcs[i].tdActive = false;
+            tdNpcs[i].tdSpawnDelayTicks = i * 5;
+            tdNpcs[i].tdRouteIndex = 0;
+            tdNpcs[i].pathLength = 0;
+            tdNpcs[i].serverPathLength = 0;
+        }
+        this.tdPendingSpawnCount = 0;
+    }
+
+    spawnTdNpc(map: WebGLMapSquare, enemy: LumbridgeTdEnemySpawnDetail): boolean {
+        const availableNpc = map.npcs.find(
+            (npc) =>
+                npc.tdEnemySlot >= 0 &&
+                npc.tdEnemyId === undefined &&
+                npc.npcType.id === enemy.npcId,
+        );
+
+        if (availableNpc) {
+            availableNpc.tdEnemyId = enemy.id;
+            availableNpc.tdActive = true;
+            availableNpc.tdCompleted = false;
+            availableNpc.tdMoveClientTicks = 0;
+            this.setTdNpcWorldPosition(map, availableNpc, enemy.x, enemy.y);
+            return true;
+        } else {
+            console.warn(`No available NPC found for enemy type ${enemy.npcId} (${enemy.name})`);
+            return false;
+        }
+    }
+
+    reloadTdMapForNpcPool(map: WebGLMapSquare, npcId: number): void {
+        const hasTypedPool = map.npcs.some(
+            (npc) => npc.tdEnemySlot >= 0 && npc.npcType.id === npcId,
+        );
+        if (hasTypedPool) {
+            return;
+        }
+        this.mapManager.removeMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
+    }
+
+    updateTdNpcPosition(map: WebGLMapSquare, update: LumbridgeTdEnemyUpdateDetail): void {
+        const npc = map.npcs.find((n) => n.tdEnemyId === update.id);
+        if (npc) {
+            this.setTdNpcWorldPosition(map, npc, update.x, update.y);
+        }
+    }
+
+    removeTdNpc(map: WebGLMapSquare, enemyId: string): void {
+        const npc = map.npcs.find((n) => n.tdEnemyId === enemyId);
+        if (npc) {
+            npc.tdActive = false;
+            npc.tdCompleted = true;
+            npc.tdEnemyId = undefined;
+            npc.tdMoveClientTicks = 0;
+
+            npc.pathX[0] = npc.spawnX;
+            npc.pathY[0] = npc.spawnY;
+            npc.x = npc.spawnX * 128 + npc.npcType.size * 64;
+            npc.y = npc.spawnY * 128 + npc.npcType.size * 64;
+            npc.pathLength = 0;
+            npc.serverPathLength = 0;
+        }
+    }
+
+    resetTdEnemies(map: WebGLMapSquare): void {
+        const route = getLumbridgeTdRoute();
+        this.tdRouteDirty = true;
+
+        // Reset all TD NPCs to inactive state
+        for (const npc of map.npcs) {
+            if (npc.tdEnemySlot >= 0) {
+                npc.tdActive = false;
+                npc.tdCompleted = true;
+                npc.tdEnemyId = undefined;
+                npc.tdRoute = route.map((point) => ({ ...point }));
+                npc.tdSpawnDelayTicks = 0;
+                npc.tdRouteIndex = 0;
+                npc.tdMoveClientTicks = 0;
+                npc.pathLength = 0;
+                npc.serverPathLength = 0;
+
+                // Reset position to spawn point
+                npc.pathX[0] = npc.spawnX;
+                npc.pathY[0] = npc.spawnY;
+                npc.x = npc.spawnX * 128 + npc.npcType.size * 64;
+                npc.y = npc.spawnY * 128 + npc.npcType.size * 64;
+            }
+        }
+    }
+
+    setTdNpcWorldPosition(map: WebGLMapSquare, npc: Npc, worldX: number, worldY: number): void {
+        npc.setTdLocalPosition((worldX - map.mapX * 64) * 128, (worldY - map.mapY * 64) * 128);
+    }
+
+    updateTdRouteBuffer(): void {
+        const tdMap = this.mapManager.getMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
+        if (
+            !(tdMap instanceof WebGLMapSquare) ||
+            !this.tdRouteProgram ||
+            !this.sceneUniformBuffer
+        ) {
+            return;
+        }
+
+        const appendQuad = (tileX: number, tileY: number, sizeX: number, sizeY: number) => {
+            const worldX = tdMap.mapX * 64 + tileX;
+            const worldY = tdMap.mapY * 64 + tileY;
+
+            const h00 = -tdMap.getTileHeight(0, tileX, tileY) / 16 + 0.08;
+            const h10 = -tdMap.getTileHeight(0, tileX + sizeX, tileY) / 16 + 0.08;
+            const h11 = -tdMap.getTileHeight(0, tileX + sizeX, tileY + sizeY) / 16 + 0.08;
+            const h01 = -tdMap.getTileHeight(0, tileX, tileY + sizeY) / 16 + 0.08;
+
+            vertices.push(
+                worldX,
+                h00,
+                worldY,
+                worldX + sizeX,
+                h10,
+                worldY,
+                worldX + sizeX,
+                h11,
+                worldY + sizeY,
+                worldX,
+                h00,
+                worldY,
+                worldX + sizeX,
+                h11,
+                worldY + sizeY,
+                worldX,
+                h01,
+                worldY + sizeY,
+            );
+        };
+
+        const route = getLumbridgeTdRoute();
+        const vertices: number[] = [];
+        for (const point of route) {
+            appendQuad(point.x, point.y, 1, 1);
+        }
+
+        // Temporary debug patch in the castle courtyard to prove the pass is rendering at all.
+        appendQuad(29, 14, 6, 6);
+
+        this.tdRouteDrawCall = undefined;
+        this.tdRouteArray?.delete();
+        this.tdRouteArray = undefined;
+        this.tdRoutePositions?.delete();
+        this.tdRoutePositions = undefined;
+
+        this.tdRouteVertexCount = vertices.length / 3;
+        if (this.tdRouteVertexCount === 0) {
+            this.tdRouteDirty = false;
+            return;
+        }
+
+        this.tdRoutePositions = this.app.createVertexBuffer(
+            PicoGL.FLOAT,
+            3,
+            new Float32Array(vertices),
+        );
+        this.tdRouteArray = this.app
+            .createVertexArray()
+            .vertexAttributeBuffer(0, this.tdRoutePositions);
+        this.tdRouteDrawCall = this.app
+            .createDrawCall(this.tdRouteProgram, this.tdRouteArray)
+            .uniformBlock("SceneUniforms", this.sceneUniformBuffer)
+            .uniform("u_color", new Float32Array([1.0, 0.33, 0.33, 0.24]));
+        this.tdRouteDirty = false;
+    }
+
+    renderTdRoutePass(): void {
+        if (this.tdRouteDirty) {
+            this.updateTdRouteBuffer();
+        }
+        if (!this.tdRouteDrawCall || this.tdRouteVertexCount === 0) {
+            return;
+        }
+
+        const color =
+            this.tdPendingSpawnCount > 0
+                ? new Float32Array([1.0, 0.0, 1.0, 0.62])
+                : new Float32Array([1.0, 0.0, 1.0, 0.62]);
+        this.app.disable(PicoGL.CULL_FACE);
+        this.app.disable(PicoGL.DEPTH_TEST);
+        this.app.enable(PicoGL.BLEND);
+        this.tdRouteDrawCall.uniform("u_color", color);
+        this.tdRouteDrawCall.draw();
+        this.app.disable(PicoGL.BLEND);
+        this.app.enable(PicoGL.DEPTH_TEST);
+        if (this.cullBackFace) {
+            this.app.enable(PicoGL.CULL_FACE);
+        }
+    }
+
+    ensureTdCannonBuffer(): void {
+        if (!this.tdCannonDirty) {
+            return;
+        }
+
+        this.tdCannonDrawCall = undefined;
+        this.tdCannonVertexArray?.delete();
+        this.tdCannonVertexArray = undefined;
+        this.tdCannonIndexBuffer?.delete?.();
+        this.tdCannonIndexBuffer = undefined;
+        this.tdCannonInterleavedBuffer?.delete();
+        this.tdCannonInterleavedBuffer = undefined;
+        this.tdCannonModelInfoTexture?.delete();
+        this.tdCannonModelInfoTexture = undefined;
+
+        if (!this.mainProgram || !this.sceneUniformBuffer) {
+            return;
+        }
+
+        if (!this.tdTowerLocModelLoader) {
+            this.tdTowerLocModelLoader = new LocModelLoader(
+                this.mapViewer.locTypeLoader,
+                this.mapViewer.loaderFactory.getModelLoader(),
+                this.mapViewer.textureLoader,
+                this.mapViewer.seqTypeLoader,
+                this.mapViewer.seqFrameLoader,
+                this.mapViewer.loaderFactory.getSkeletalSeqLoader(),
+            );
+        }
+
+        const sceneBuf = new SceneBuffer(this.mapViewer.textureLoader, new Map(), 64);
+        const sceneModels: SceneModel[] = [];
+        const tdMap = this.mapManager.getMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
+        if (!(tdMap instanceof WebGLMapSquare)) {
+            this.tdCannonDirty = false;
+            return;
+        }
+
+        this.tdCannonModel = undefined;
+        for (const placement of this.tdCannonPlacements) {
+            const locId = TD_TOWER_LOC_IDS[placement.kind];
+            const locType = this.tdTowerLocModelLoader.locTypeLoader.load(locId);
+            const model = this.tdTowerLocModelLoader.getModelAnimated(
+                locType,
+                LocModelType.NORMAL,
+                placement.rotation,
+                -1,
+                -1,
+            );
+            if (!model) {
+                console.warn(`Unable to load TD tower loc model ${locId} for ${placement.kind}`);
+                continue;
+            }
+
+            const localX = placement.world[0] - tdMap.mapX * 64;
+            const localZ = placement.world[2] - tdMap.mapY * 64;
+            sceneModels.push({
+                model,
+                sceneHeight: placement.world[1] * 128,
+                lowDetail: false,
+                forceMerge: false,
+                sceneX: localX * 128,
+                sceneZ: localZ * 128,
+                heightOffset: 0,
+                level: 0,
+                contourGround: ContourGroundType.NONE,
+                priority: 10,
+                interactType: InteractType.NONE,
+                interactId: 0xffff,
+            });
+            this.tdCannonModel = model;
+        }
+
+        if (sceneModels.length > 0) {
+            sceneBuf.addModelGroup({
+                transparent: false,
+                lowDetail: false,
+                level: 0,
+                priority: 10,
+                models: sceneModels,
+            });
+            sceneBuf.addModelGroup({
+                transparent: true,
+                lowDetail: false,
+                level: 0,
+                priority: 10,
+                models: sceneModels,
+            });
+        }
+
+        const drawCommands: DrawCommand[] = [
+            ...sceneBuf.drawCommands,
+            ...sceneBuf.drawCommandsAlpha,
+        ];
+
+        console.log(
+            "TD tower objects",
+            this.tdCannonPlacements.map((placement) => ({
+                kind: placement.kind,
+                locId: TD_TOWER_LOC_IDS[placement.kind],
+                world: Array.from(placement.world),
+            })),
+            "indices",
+            sceneBuf.indices.length,
+        );
+
+        if (drawCommands.length === 0) {
+            this.tdCannonDirty = false;
+            return;
+        }
+
+        this.tdCannonIndexCount = sceneBuf.indices.length;
+        this.tdCannonInterleavedBuffer = this.app.createInterleavedBuffer(
+            12,
+            sceneBuf.vertexBuf.byteArray(),
+        );
+        this.tdCannonIndexBuffer = this.app.createIndexBuffer(
+            PicoGL.UNSIGNED_INT,
+            new Uint32Array(sceneBuf.indices),
+        );
+        this.tdCannonVertexArray = this.app
+            .createVertexArray()
+            .vertexAttributeBuffer(0, this.tdCannonInterleavedBuffer, {
+                type: PicoGL.UNSIGNED_INT,
+                size: 3,
+                stride: 12,
+                integer: true as any,
+            })
+            .indexBuffer(this.tdCannonIndexBuffer);
+        const modelInfoTextureData = createModelInfoTextureData(drawCommands);
+        this.tdCannonModelInfoTexture = this.app.createTexture2D(
+            modelInfoTextureData,
+            16,
+            Math.max(Math.ceil(modelInfoTextureData.length / 16 / 4), 1),
+            {
+                internalFormat: PicoGL.RGBA16UI,
+                minFilter: PicoGL.NEAREST,
+                magFilter: PicoGL.NEAREST,
+            },
+        );
+        this.tdCannonDrawCall = this.app
+            .createDrawCall(this.mainProgram, this.tdCannonVertexArray)
+            .uniformBlock("SceneUniforms", this.sceneUniformBuffer);
+        this.tdCannonDrawCall
+            .texture("u_textures", this.textureArray!)
+            .texture("u_textureMaterials", this.textureMaterials!)
+            .texture("u_heightMap", tdMap.heightMapTexture)
+            .texture("u_modelInfoTexture", this.tdCannonModelInfoTexture)
+            .uniform("u_mapPos", vec2.fromValues(tdMap.mapX, tdMap.mapY))
+            .uniform("u_timeLoaded", tdMap.timeLoaded)
+            .uniform("u_drawIdOffset", 0);
+        this.tdCannonDrawCall.drawRanges(
+            ...drawCommands.map((cmd) => [cmd.offset, cmd.elements, cmd.instances.length]),
+        );
+        this.tdCannonDirty = false;
+    }
+
+    renderTdCannonPass(): void {
+        if (this.tdCannonDirty) {
+            this.ensureTdCannonBuffer();
+        }
+        if (!this.tdCannonDrawCall || this.tdCannonIndexCount === 0 || !this.tdCannonModel) {
+            return;
+        }
+        if (this.tdCannonPlacements.length === 0) {
+            return;
+        }
+
+        this.tdCannonDrawCall.draw();
     }
 
     updateNpcDataTexture() {
@@ -1140,6 +1693,12 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         }
     }
 
+    shouldRenderNpc(npc: Npc): boolean {
+        return (
+            npc.tdEnemySlot < 0 || (npc.tdActive && !npc.tdCompleted && npc.tdEnemyId !== undefined)
+        );
+    }
+
     renderOpaqueNpcPass(npcDataTextureIndex: number, npcDataTexture: Texture | undefined): void {
         if (!npcDataTexture || !this.loadNpcs) {
             return;
@@ -1165,10 +1724,12 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
             for (let i = 0; i < npcs.length; i++) {
                 const npc = npcs[i];
-                const anim = npc.getAnimationFrames();
-
-                const frameId = npc.movementFrame;
-                const frame = anim.frames[frameId];
+                let frame: DrawRange = NULL_DRAW_RANGE;
+                if (this.shouldRenderNpc(npc)) {
+                    const anim = npc.getAnimationFrames();
+                    const frameId = npc.movementFrame;
+                    frame = anim.frames[frameId];
+                }
 
                 (drawCall as any).offsets[i] = frame[0];
                 (drawCall as any).numElements[i] = frame[1];
@@ -1241,12 +1802,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
             for (let i = 0; i < npcs.length; i++) {
                 const npc = npcs[i];
-                const anim = npc.getAnimationFrames();
-
                 const frameId = npc.movementFrame;
                 let frame: DrawRange = NULL_DRAW_RANGE;
-                if (anim.framesAlpha) {
-                    frame = anim.framesAlpha[frameId];
+                if (this.shouldRenderNpc(npc)) {
+                    const anim = npc.getAnimationFrames();
+                    if (anim.framesAlpha) {
+                        frame = anim.framesAlpha[frameId];
+                    }
                 }
 
                 (drawCall as any).offsets[i] = frame[0];
@@ -1308,7 +1870,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         const locIds = new Set<number>();
         const objIds = new Set<number>();
-        const npcIds = new Set<number>();
+        const npcIds = new Set<string>();
 
         for (let i = 0; i < INTERACTION_RADIUS + 1; i++) {
             const indices = this.closestInteractIndices.get(i);
@@ -1383,6 +1945,9 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                         onClick: this.mapViewer.onExamine,
                     });
                 } else if (interactType === InteractType.NPC) {
+                    const mapId = this.interactBuffer[index + 1];
+                    const npcDrawIndex = this.interactBuffer[index + 3] | 0;
+                    const pickedNpc = this.getNpcFromInteraction(mapId, npcDrawIndex, interactId);
                     let npcType = this.mapViewer.npcTypeLoader.load(interactId);
                     if (npcType.transforms) {
                         const transformed = npcType.transform(
@@ -1397,10 +1962,45 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                     if (npcType.name === "null" && !this.mapViewer.debugId) {
                         continue;
                     }
-                    if (npcIds.has(interactId)) {
+                    const tdEnemy =
+                        pickedNpc?.tdEnemyId !== undefined
+                            ? this.tdEnemies.get(pickedNpc.tdEnemyId)
+                            : undefined;
+                    const npcKey = tdEnemy ? `td:${tdEnemy.id}` : `npc:${interactId}`;
+                    if (npcIds.has(npcKey)) {
                         continue;
                     }
-                    npcIds.add(interactId);
+                    npcIds.add(npcKey);
+
+                    if (tdEnemy) {
+                        const hp = Math.max(0, Math.ceil(tdEnemy.hp));
+                        const maxHp = Math.max(1, Math.ceil(tdEnemy.maxHp));
+                        const openTdEnemyInfo = () => {
+                            window.dispatchEvent(
+                                new CustomEvent(LUMBRIDGE_TD_ENEMY_SELECTED, {
+                                    detail: { id: tdEnemy.id },
+                                }),
+                            );
+                            this.mapViewer.closeMenu();
+                        };
+                        menuEntries.push({
+                            option: `Attack (${hp}/${maxHp} HP)`,
+                            targetId: npcType.id,
+                            targetType: MenuTargetType.NPC,
+                            targetName: tdEnemy.name,
+                            targetLevel: tdEnemy.level,
+                            onClick: openTdEnemyInfo,
+                        });
+                        examineEntries.push({
+                            option: `Health ${hp}/${maxHp}`,
+                            targetId: npcType.id,
+                            targetType: MenuTargetType.NPC,
+                            targetName: tdEnemy.name,
+                            targetLevel: tdEnemy.level,
+                            onClick: openTdEnemyInfo,
+                        });
+                        continue;
+                    }
 
                     for (const option of npcType.actions) {
                         if (!option) {
@@ -1455,7 +2055,42 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.mapViewer.menuEntries = menuEntries;
     }
 
+    getNpcFromInteraction(
+        mapId: number,
+        npcDrawIndex: number,
+        interactId: number,
+    ): Npc | undefined {
+        const map = this.mapManager.mapSquares.get(mapId);
+        const npc = map?.npcs[npcDrawIndex];
+        if (!npc || npc.npcType.id !== interactId) {
+            return undefined;
+        }
+        return npc;
+    }
+
     override async cleanUp(): Promise<void> {
+        window.removeEventListener(LUMBRIDGE_TD_START_WAVE, this.onTdStartWave as EventListener);
+        window.removeEventListener(LUMBRIDGE_TD_RESET, this.onTdReset);
+        window.removeEventListener(
+            LUMBRIDGE_TD_ROUTE_CHANGED,
+            this.onTdRouteChanged as EventListener,
+        );
+        window.removeEventListener(
+            LUMBRIDGE_TD_TOWERS_CHANGED,
+            this.onTdTowersChanged as EventListener,
+        );
+        window.removeEventListener(
+            LUMBRIDGE_TD_ENEMY_SPAWNED,
+            this.onTdEnemySpawned as EventListener,
+        );
+        window.removeEventListener(
+            LUMBRIDGE_TD_ENEMY_UPDATED,
+            this.onTdEnemyUpdated as EventListener,
+        );
+        window.removeEventListener(
+            LUMBRIDGE_TD_ENEMY_REMOVED,
+            this.onTdEnemyRemoved as EventListener,
+        );
         super.cleanUp();
         this.mapViewer.workerPool.resetLoader(this.dataLoader);
 
@@ -1464,6 +2099,21 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         this.quadPositions?.delete();
         this.quadPositions = undefined;
+
+        this.tdRouteArray?.delete();
+        this.tdRouteArray = undefined;
+
+        this.tdRoutePositions?.delete();
+        this.tdRoutePositions = undefined;
+        this.tdRouteDrawCall = undefined;
+
+        this.tdCannonDrawCall = undefined;
+        this.tdCannonVertexArray?.delete();
+        this.tdCannonVertexArray = undefined;
+        this.tdCannonIndexBuffer?.delete?.();
+        this.tdCannonIndexBuffer = undefined;
+        this.tdCannonInterleavedBuffer?.delete();
+        this.tdCannonInterleavedBuffer = undefined;
 
         // Uniforms
         this.sceneUniformBuffer?.delete();

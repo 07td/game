@@ -127,7 +127,7 @@ void main() {
         float(npcInfo.interactId),
         float(uint(u_mapPos.x) << 8u | uint(u_mapPos.y)),
         interactType,
-        1.0
+        float(DRAW_ID)
     );
 
     gl_Position = u_viewMatrix * localPos;

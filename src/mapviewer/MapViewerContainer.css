@@ -1,3 +1,7 @@
+.mapviewer-root {
+    position: relative;
+}
+
 .overlay-container {
     display: flex;
     position: absolute;

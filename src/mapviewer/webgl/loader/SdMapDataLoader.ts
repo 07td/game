@@ -11,6 +11,12 @@ import { LocEntity } from "../../../rs/scene/entity/LocEntity";
 import { TextureLoader } from "../../../rs/texture/TextureLoader";
 import { NpcSpawn, getMapNpcSpawns } from "../../data/npc/NpcSpawn";
 import { ObjSpawn, getMapObjSpawns } from "../../data/obj/ObjSpawn";
+import { LUMBRIDGE_TD_ENEMY_ARCHETYPES } from "../../td/lumbridgeTdEnemies";
+import {
+    LUMBRIDGE_TD_MAP_X,
+    LUMBRIDGE_TD_MAP_Y,
+    getLumbridgeTdRoute,
+} from "../../td/lumbridgeTdRoute";
 import { loadMinimapBlob } from "../../worker/MinimapData";
 import { RenderDataLoader, RenderDataResult } from "../../worker/RenderDataLoader";
 import { WorkerState } from "../../worker/RenderDataWorker";
@@ -32,10 +38,16 @@ import {
 import { LocAnimatedGroup } from "../loc/LocAnimatedGroup";
 import { SceneLocEntity } from "../loc/SceneLocEntity";
 import { getSceneLocs, isLowDetail } from "../loc/SceneLocs";
-import { createNpcDatas } from "../npc/NpcData";
+import { NpcData, createNpcData, createNpcDatas } from "../npc/NpcData";
 import { NpcSpawnGroup } from "../npc/NpcSpawnGroup";
 import { SdMapData } from "./SdMapData";
 import { SdMapLoaderInput } from "./SdMapLoaderInput";
+
+const LUMBRIDGE_TD_POOL_SIZE_PER_ARCHETYPE = 24;
+
+type LumbridgeTdNpcSpawn = NpcSpawn & {
+    tdEnemySlot: number;
+};
 
 function loadHeightMapTextureData(scene: Scene): Int16Array {
     const heightMapTextureData = new Int16Array(Scene.MAX_LEVELS * scene.sizeX * scene.sizeY);
@@ -462,19 +474,39 @@ function addNpcAnimationFrames(
 ): AnimationFrames | undefined {
     const seqType = npcModelLoader.seqTypeLoader.load(seqId);
     if (!seqType) {
-        return undefined;
+        const model = npcModelLoader.getModel(npcType, -1, -1);
+        if (!model) {
+            return undefined;
+        }
+        const frame = sceneBuf.addModelAnimFrame(model, false);
+        const frameAlpha = sceneBuf.addModelAnimFrame(model, true);
+        return {
+            frames: [frame],
+            framesAlpha: frameAlpha[1] > 0 ? [frameAlpha] : undefined,
+        };
     }
     let frameCount: number;
     if (seqType.isSkeletalSeq()) {
         frameCount = seqType.getSkeletalDuration();
     } else {
         if (!seqType.frameIds) {
-            return undefined;
+            frameCount = 0;
+        } else {
+            frameCount = seqType.frameIds.length;
         }
-        frameCount = seqType.frameIds.length;
     }
     if (frameCount === 0) {
-        return undefined;
+        const model =
+            npcModelLoader.getModel(npcType, seqId, 0) ?? npcModelLoader.getModel(npcType, -1, -1);
+        if (!model) {
+            return undefined;
+        }
+        const frame = sceneBuf.addModelAnimFrame(model, false);
+        const frameAlpha = sceneBuf.addModelAnimFrame(model, true);
+        return {
+            frames: [frame],
+            framesAlpha: frameAlpha[1] > 0 ? [frameAlpha] : undefined,
+        };
     }
     const frames = new Array<DrawRange>(frameCount);
     const framesAlpha = new Array<DrawRange>(frameCount);
@@ -523,10 +555,6 @@ function createNpcSpawnGroups(
         const idleSeqId = npcType.getIdleSeqId(basTypeLoader);
         const walkSeqId = npcType.getWalkSeqId(basTypeLoader);
 
-        if (idleSeqId === -1) {
-            continue;
-        }
-
         const idleAnim = addNpcAnimationFrames(npcModelLoader, sceneBuf, npcType, idleSeqId);
         let walkAnim = idleAnim;
         if (walkSeqId !== -1 && walkSeqId !== idleSeqId) {
@@ -545,6 +573,57 @@ function createNpcSpawnGroups(
     }
 
     return groups;
+}
+
+function createLumbridgeTdNpcData(
+    npcModelLoader: NpcModelLoader,
+    basTypeLoader: BasTypeLoader,
+    sceneBuf: SceneBuffer,
+    mapX: number,
+    mapY: number,
+): NpcData[] {
+    if (mapX !== LUMBRIDGE_TD_MAP_X || mapY !== LUMBRIDGE_TD_MAP_Y) {
+        return [];
+    }
+
+    const route = getLumbridgeTdRoute();
+    if (route.length === 0) {
+        return [];
+    }
+
+    const spawns: LumbridgeTdNpcSpawn[] = [];
+    for (
+        let archetypeIndex = 0;
+        archetypeIndex < LUMBRIDGE_TD_ENEMY_ARCHETYPES.length;
+        archetypeIndex++
+    ) {
+        const archetype = LUMBRIDGE_TD_ENEMY_ARCHETYPES[archetypeIndex];
+        const npcType = npcModelLoader.npcTypeLoader.load(archetype.npcId);
+        const routeOffset = Math.floor(npcType.size / 2);
+        for (let poolIndex = 0; poolIndex < LUMBRIDGE_TD_POOL_SIZE_PER_ARCHETYPE; poolIndex++) {
+            spawns.push({
+                id: archetype.npcId,
+                name: archetype.name,
+                x: mapX * 64 + Math.max(0, Math.min(64 - npcType.size, route[0].x - routeOffset)),
+                y: mapY * 64 + Math.max(0, Math.min(64 - npcType.size, route[0].y - routeOffset)),
+                level: 0,
+                tdEnemySlot: archetypeIndex * LUMBRIDGE_TD_POOL_SIZE_PER_ARCHETYPE + poolIndex,
+            });
+        }
+    }
+
+    const npcData: NpcData[] = [];
+    const groups = createNpcSpawnGroups(npcModelLoader, basTypeLoader, sceneBuf, spawns);
+    for (const group of groups) {
+        for (const spawn of group.spawns as LumbridgeTdNpcSpawn[]) {
+            npcData.push({
+                ...createNpcData(group, spawn),
+                tdEnemySlot: spawn.tdEnemySlot,
+            });
+        }
+    }
+
+    return npcData;
 }
 
 export class SdMapDataLoader implements RenderDataLoader<SdMapLoaderInput, SdMapData | undefined> {
@@ -566,6 +645,7 @@ export class SdMapDataLoader implements RenderDataLoader<SdMapLoaderInput, SdMap
             maxLevel,
             loadObjs,
             loadNpcs,
+            tdOnlyNpcs,
             smoothTerrain,
             minimizeDrawCalls,
             loadedTextureIds,
@@ -634,24 +714,32 @@ export class SdMapDataLoader implements RenderDataLoader<SdMapLoaderInput, SdMap
 
         let npcSpawns: NpcSpawn[] = [];
         if (loadNpcs) {
-            const cacheNpcSpawns = state.sceneBuilder.decodeNpcSpawns(
-                scene,
-                borderSize,
-                mapX,
-                mapY,
-            );
-            if (cacheNpcSpawns) {
-                npcSpawns = cacheNpcSpawns.filter((spawn) => {
-                    const npcType = npcTypeLoader.load(spawn.id);
-                    return (npcType.loginScreenProps & 0x1) > 0;
-                });
-            } else {
-                npcSpawns = getMapNpcSpawns(state.npcSpawns, maxLevel, mapX, mapY);
-                npcSpawns = npcSpawns.filter((spawn) => {
+            if (!tdOnlyNpcs) {
+                const localNpcSpawns = getMapNpcSpawns(
+                    state.npcSpawns,
+                    maxLevel,
+                    mapX,
+                    mapY,
+                ).filter((spawn) => {
                     return (
                         spawn.name === undefined || spawn.name === npcTypeLoader.load(spawn.id).name
                     );
                 });
+                const cacheNpcSpawns = state.sceneBuilder.decodeNpcSpawns(
+                    scene,
+                    borderSize,
+                    mapX,
+                    mapY,
+                );
+                if (cacheNpcSpawns) {
+                    npcSpawns = cacheNpcSpawns.filter((spawn) => {
+                        const npcType = npcTypeLoader.load(spawn.id);
+                        return (npcType.loginScreenProps & 0x1) > 0;
+                    });
+                    npcSpawns.push(...localNpcSpawns);
+                } else {
+                    npcSpawns = localNpcSpawns;
+                }
             }
         }
         const npcSpawnGroups = createNpcSpawnGroups(
@@ -661,6 +749,7 @@ export class SdMapDataLoader implements RenderDataLoader<SdMapLoaderInput, SdMap
             npcSpawns,
         );
         const npcs = createNpcDatas(npcSpawnGroups);
+        npcs.push(...createLumbridgeTdNpcData(npcModelLoader, basTypeLoader, sceneBuf, mapX, mapY));
 
         // Draw ranges
 
@@ -794,6 +883,7 @@ export class SdMapDataLoader implements RenderDataLoader<SdMapLoaderInput, SdMap
                 maxLevel,
                 loadObjs,
                 loadNpcs,
+                tdOnlyNpcs,
 
                 smoothTerrain,
 

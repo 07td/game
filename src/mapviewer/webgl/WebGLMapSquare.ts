@@ -16,6 +16,7 @@ import { getMapSquareId } from "../../rs/map/MapFileIndex";
 import { CollisionFlag } from "../../rs/pathfinder/flag/CollisionFlag";
 import { CollisionMap } from "../../rs/scene/CollisionMap";
 import { Scene } from "../../rs/scene/Scene";
+import { getLumbridgeTdRoute } from "../td/lumbridgeTdRoute";
 import { DrawRange, newDrawRange } from "./DrawRange";
 import { SdMapData } from "./loader/SdMapData";
 import { LocAnimated } from "./loc/LocAnimated";
@@ -215,21 +216,27 @@ export class WebGLMapSquare {
         for (const npc of mapData.npcs) {
             const npcType = npcTypeLoader.load(npc.id);
 
-            npcs.push(
-                new Npc(
-                    npc.tileX,
-                    npc.tileY,
-                    npc.level,
-                    npc.idleAnim,
-                    npc.walkAnim,
-                    npcType,
-                    npcType.getIdleSeqId(basTypeLoader),
-                    npcType.getWalkSeqId(basTypeLoader),
-                ),
+            const npcEntity = new Npc(
+                npc.tileX,
+                npc.tileY,
+                npc.level,
+                npc.idleAnim,
+                npc.walkAnim,
+                npcType,
+                npcType.getIdleSeqId(basTypeLoader),
+                npcType.getWalkSeqId(basTypeLoader),
             );
+            if (npc.tdEnemySlot !== undefined) {
+                npcEntity.tdEnemySlot = npc.tdEnemySlot;
+                npcEntity.tdRoute = getLumbridgeTdRoute();
+            }
+            npcs.push(npcEntity);
         }
 
         for (const npc of npcs) {
+            if (npc.tdRoute) {
+                continue;
+            }
             const collisionMap = collisionMaps[npc.level];
 
             const currentX = npc.pathX[0];
@@ -259,6 +266,7 @@ export class WebGLMapSquare {
             borderSize,
             tileRenderFlags,
             collisionMaps,
+            mapData.heightMapTextureData,
 
             time,
             frame,
@@ -307,6 +315,7 @@ export class WebGLMapSquare {
         readonly borderSize: number,
         readonly tileRenderFlags: Uint8Array[][],
         readonly collisionMaps: CollisionMap[],
+        readonly heightMapTextureData: Int16Array,
 
         readonly timeLoaded: number,
         readonly frameLoaded: number,
@@ -361,6 +370,17 @@ export class WebGLMapSquare {
 
     getTileRenderFlag(level: number, tileX: number, tileY: number): number {
         return this.tileRenderFlags[level][tileX + this.borderSize][tileY + this.borderSize];
+    }
+
+    getTileHeight(level: number, tileX: number, tileY: number): number {
+        const size = Scene.MAP_SQUARE_SIZE + this.borderSize * 2;
+        const x = tileX + this.borderSize;
+        const y = tileY + this.borderSize;
+        if (x < 0 || y < 0 || x >= size || y >= size) {
+            return 0;
+        }
+        const index = level * size * size + y * size + x;
+        return this.heightMapTextureData[index];
     }
 
     getMapDistance(mapX: number, mapY: number): number {

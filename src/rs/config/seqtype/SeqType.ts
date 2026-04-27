@@ -276,6 +276,8 @@ export class SeqType extends Type {
             if (this.cacheInfo.game === "oldschool") {
                 if (this.cacheInfo.revision < 226) {
                     this.decodeSkeletalDuration(buffer);
+                } else {
+                    buffer.readUnsignedByte();
                 }
             } else {
                 // bool = true;

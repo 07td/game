@@ -53,6 +53,10 @@ export abstract class MapViewerRenderer<T extends MapSquare = MapSquare> extends
         this.handleMouseInput();
         this.handleControllerInput(deltaTime);
         this.handleJoystickInput(deltaTime);
+
+        if (this.mapViewer.pinnedView) {
+            this.mapViewer.clampPinnedCamera();
+        }
     }
 
     handleKeyInput(deltaTime: number) {

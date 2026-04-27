@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git log --oneline -5)",
+      "Bash(git remote set-url origin git@github.com:jessemcbride/osrs-tower-defense.git)",
+      "Bash(git add .)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

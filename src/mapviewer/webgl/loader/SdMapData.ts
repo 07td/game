@@ -12,6 +12,7 @@ export type SdMapData = {
     maxLevel: number;
     loadObjs: boolean;
     loadNpcs: boolean;
+    tdOnlyNpcs: boolean;
 
     smoothTerrain: boolean;
 

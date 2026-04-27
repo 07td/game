@@ -15,6 +15,7 @@ import { MapViewer } from "./MapViewer";
 import "./MapViewerContainer.css";
 import { MapViewerControls } from "./MapViewerControls";
 import { MapViewerRenderer } from "./MapViewerRenderer";
+import { LumbridgeTowerDefenseOverlay } from "./td/LumbridgeTowerDefenseOverlay";
 
 interface MapViewerContainerProps {
     mapViewer: MapViewer;
@@ -27,7 +28,7 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
 
     const [downloadProgress, setDownloadProgress] = useState<DownloadProgress>();
 
-    const [hideUi, setHideUi] = useState(false);
+    const [hideUi, setHideUi] = useState(mapViewer.pinnedView);
     const [fps, setFps] = useState(0);
     const [cameraYaw, setCameraYaw] = useState(mapViewer.camera.getYaw());
     const [isWorldMapOpen, setWorldMapOpen] = useState<boolean>(false);
@@ -87,6 +88,9 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
 
     const onMapClicked = useCallback(
         (x: number, y: number) => {
+            if (mapViewer.pinnedView) {
+                return;
+            }
             mapViewer.camera.pos[0] = x;
             mapViewer.camera.pos[2] = y;
             mapViewer.camera.updated = true;
@@ -134,18 +138,20 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
     }
 
     return (
-        <div className="max-height">
+        <div className="max-height mapviewer-root">
             {loadingBarOverlay}
 
             {menuProps && <OsrsMenu {...menuProps} />}
 
-            <MapViewerControls
-                renderer={renderer}
-                hideUi={hideUi}
-                setRenderer={setRenderer}
-                setHideUi={setHideUi}
-                setDownloadProgress={setDownloadProgress}
-            />
+            {!mapViewer.pinnedView && (
+                <MapViewerControls
+                    renderer={renderer}
+                    hideUi={hideUi}
+                    setRenderer={setRenderer}
+                    setHideUi={setHideUi}
+                    setDownloadProgress={setDownloadProgress}
+                />
+            )}
 
             {!hideUi && (
                 <span>
@@ -197,6 +203,7 @@ export function MapViewerContainer({ mapViewer }: MapViewerContainerProps): JSX.
             )}
 
             <RendererCanvas renderer={renderer} />
+            {mapViewer.pinnedView && <LumbridgeTowerDefenseOverlay mapViewer={mapViewer} />}
         </div>
     );
 }

@@ -9,6 +9,7 @@ export type NpcData = {
     level: number;
     idleAnim: AnimationFrames;
     walkAnim: AnimationFrames | undefined;
+    tdEnemySlot?: number;
 };
 
 export function createNpcDatas(groups: NpcSpawnGroup[]): NpcData[] {

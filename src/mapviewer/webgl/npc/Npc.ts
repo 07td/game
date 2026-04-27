@@ -41,6 +41,15 @@ export class Npc {
     movementFrameTick: number = 0;
     movementLoop: number = 0;
 
+    tdEnemySlot: number = -1;
+    tdActive: boolean = false;
+    tdCompleted: boolean = false;
+    tdSpawnDelayTicks: number = 0;
+    tdRouteIndex: number = 0;
+    tdMoveClientTicks: number = 0;
+    tdRoute?: Array<{ x: number; y: number }>;
+    tdEnemyId?: string;
+
     constructor(
         readonly spawnX: number,
         readonly spawnY: number,
@@ -62,6 +71,54 @@ export class Npc {
 
     getSize(): number {
         return this.npcType.size;
+    }
+
+    private getTdRouteAnchor(tileX: number, tileY: number, size: number): { x: number; y: number } {
+        const offset = Math.floor(size / 2);
+        return {
+            x: clamp(tileX - offset, 0, 64 - size),
+            y: clamp(tileY - offset, 0, 64 - size),
+        };
+    }
+
+    setTdLocalPosition(localX: number, localY: number): void {
+        const size = this.npcType.size;
+        const minCenter = size * 64;
+        const maxCenter = (64 - size) * 128 + size * 64;
+        const nextX = Math.round(clamp(localX, minCenter, maxCenter));
+        const nextY = Math.round(clamp(localY, minCenter, maxCenter));
+
+        if (nextX !== this.x || nextY !== this.y) {
+            if (this.x < nextX) {
+                if (this.y < nextY) {
+                    this.orientation = 1280;
+                } else if (this.y > nextY) {
+                    this.orientation = 1792;
+                } else {
+                    this.orientation = 1536;
+                }
+            } else if (this.x > nextX) {
+                if (this.y < nextY) {
+                    this.orientation = 768;
+                } else if (this.y > nextY) {
+                    this.orientation = 256;
+                } else {
+                    this.orientation = 512;
+                }
+            } else if (this.y < nextY) {
+                this.orientation = 1024;
+            } else if (this.y > nextY) {
+                this.orientation = 0;
+            }
+            this.tdMoveClientTicks = 4;
+        }
+
+        this.x = nextX;
+        this.y = nextY;
+        this.pathX[0] = clamp(Math.floor(this.x / 128 - size / 2), 0, 64 - size);
+        this.pathY[0] = clamp(Math.floor(this.y / 128 - size / 2), 0, 64 - size);
+        this.pathLength = 0;
+        this.serverPathLength = 0;
     }
 
     canWalk(): boolean {
@@ -238,6 +295,16 @@ export class Npc {
             }
         }
 
+        if (
+            this.tdEnemySlot >= 0 &&
+            this.tdEnemyId !== undefined &&
+            this.tdMoveClientTicks > 0 &&
+            this.walkSeqId !== -1
+        ) {
+            this.movementSeqId = this.walkSeqId;
+            this.tdMoveClientTicks--;
+        }
+
         const deltaRotation = (this.orientation - this.rotation) & 2047;
         if (deltaRotation !== 0) {
             const rotateDir = deltaRotation > 1024 ? -1 : 1;
@@ -331,6 +398,120 @@ export class Npc {
         borderSize: number,
         collisionMaps: CollisionMap[],
     ) {
+        if (this.tdEnemySlot >= 0) {
+            return;
+        }
+
+        if (this.tdRoute) {
+            if (this.tdCompleted) {
+                return;
+            }
+
+            const collisionMap = collisionMaps[this.level];
+            const size = this.getSize();
+
+            if (!this.tdActive) {
+                if (this.tdSpawnDelayTicks > 0) {
+                    this.tdSpawnDelayTicks--;
+                    return;
+                }
+
+                this.tdActive = true;
+                this.tdRouteIndex = 0;
+                this.pathLength = 0;
+                this.serverPathLength = 0;
+
+                const start = this.tdRoute[0];
+                const startAnchor = this.getTdRouteAnchor(start.x, start.y, size);
+                this.pathX[0] = startAnchor.x;
+                this.pathY[0] = startAnchor.y;
+                this.x = startAnchor.x * 128 + size * 64;
+                this.y = startAnchor.y * 128 + size * 64;
+            }
+
+            if (this.pathLength === 0 && this.serverPathLength === 0) {
+                if (this.tdRouteIndex >= this.tdRoute.length - 1) {
+                    this.tdCompleted = true;
+                    this.tdActive = false;
+                    return;
+                }
+
+                const currX = this.pathX[0];
+                const currY = this.pathY[0];
+                const next = this.tdRoute[this.tdRouteIndex + 1];
+                const nextAnchor = this.getTdRouteAnchor(next.x, next.y, size);
+
+                routeStrategy.approxDestX = nextAnchor.x;
+                routeStrategy.approxDestY = nextAnchor.y;
+                routeStrategy.destSizeX = size;
+                routeStrategy.destSizeY = size;
+
+                let steps = pathfinder.findPath(
+                    currX,
+                    currY,
+                    size,
+                    this.level,
+                    routeStrategy,
+                    NORMAL_STRATEGY,
+                    CollisionFlag.BLOCK_NPCS,
+                    true,
+                );
+                if (steps > 24) {
+                    steps = 24;
+                }
+                if (steps <= 0) {
+                    this.tdCompleted = true;
+                    this.tdActive = false;
+                    return;
+                }
+
+                for (let s = 0; s < steps; s++) {
+                    this.serverPathX[s] = pathfinder.bufferX[s];
+                    this.serverPathY[s] = pathfinder.bufferY[s];
+                    this.serverPathMovementType[s] = MovementType.WALK;
+                }
+                this.serverPathLength = steps;
+                this.tdRouteIndex++;
+            }
+
+            if (this.serverPathLength > 0) {
+                const currX = this.pathX[0];
+                const currY = this.pathY[0];
+                const targetX = this.serverPathX[this.serverPathLength - 1];
+                const targetY = this.serverPathY[this.serverPathLength - 1];
+                const deltaX = clamp(targetX - currX, -1, 1);
+                const deltaY = clamp(targetY - currY, -1, 1);
+                const nextX = currX + deltaX;
+                const nextY = currY + deltaY;
+
+                let canMove = true;
+                exitTd: for (let flagX = nextX; flagX < nextX + size; flagX++) {
+                    for (let flagY = nextY; flagY < nextY + size; flagY++) {
+                        if (
+                            collisionMap.hasFlag(
+                                flagX + borderSize,
+                                flagY + borderSize,
+                                CollisionFlag.BLOCK_NPCS,
+                            )
+                        ) {
+                            canMove = false;
+                            break exitTd;
+                        }
+                    }
+                }
+
+                if (canMove) {
+                    this.queuePath(nextX, nextY, MovementType.WALK);
+                }
+
+                if (nextX === targetX && nextY === targetY) {
+                    this.serverPathLength--;
+                }
+            }
+
+            return;
+        }
+
         const size = this.getSize();
 
         const collisionMap = collisionMaps[this.level];
@@ -350,8 +531,8 @@ export class Npc {
 
             routeStrategy.approxDestX = targetX;
             routeStrategy.approxDestY = targetY;
-            routeStrategy.destSizeX = 1;
-            routeStrategy.destSizeY = 1;
+            routeStrategy.destSizeX = size;
+            routeStrategy.destSizeY = size;
 
             pathfinder.setNpcFlags(srcX, srcY, spawnX, spawnY, 5, borderSize, collisionMap);
 

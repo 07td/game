@@ -27,12 +27,31 @@ import { ObjSpawn } from "./data/obj/ObjSpawn";
 import { RenderDataWorkerPool } from "./worker/RenderDataWorkerPool";
 
 const DEFAULT_RENDER_DISTANCE = isWallpaperEngine ? 512 : 128;
+const PINNED_CAMERA_X_RANGE = 26;
+const PINNED_CAMERA_Y_RANGE = 18;
+const PINNED_CAMERA_Z_RANGE = 26;
+const PINNED_CAMERA_PITCH_RANGE = 110;
+const PINNED_CAMERA_YAW_RANGE = 220;
 
 const CACHED_MAP_IMAGE_PREFIX = "/map-images/";
+const LUMBRIDGE_CASTLE_CAMERA: CameraView = {
+    position: vec3.fromValues(3242, -26, 3202),
+    pitch: -245,
+    yaw: 1862,
+    fov: 90,
+    orthoZoom: 15,
+};
 
 export class MapViewer {
     inputManager: InputManager = new InputManager();
-    camera: Camera = new Camera(3242, -26, 3202, -245, 1862);
+    camera: Camera = new Camera(
+        LUMBRIDGE_CASTLE_CAMERA.position[0],
+        LUMBRIDGE_CASTLE_CAMERA.position[1],
+        LUMBRIDGE_CASTLE_CAMERA.position[2],
+        LUMBRIDGE_CASTLE_CAMERA.pitch,
+        LUMBRIDGE_CASTLE_CAMERA.yaw,
+    );
+    readonly pinnedView: boolean = true;
 
     pathfinder: Pathfinder = new Pathfinder();
 
@@ -103,6 +122,14 @@ export class MapViewer {
     }
 
     getSearchParams(): URLSearchParamsInit {
+        if (this.pinnedView) {
+            const params: any = { v: 1 };
+            if (this.loadedCache.info.name !== this.cacheList.latest.name) {
+                params["cache"] = this.loadedCache.info.name;
+            }
+            return params;
+        }
+
         const cx = this.camera.getPosX().toFixed(2).toString();
         const cy = -this.camera.getPosY().toFixed(2).toString();
         const cz = this.camera.getPosZ().toFixed(2).toString();
@@ -135,6 +162,14 @@ export class MapViewer {
     }
 
     applySearchParams(searchParams: URLSearchParams) {
+        if (this.pinnedView) {
+            const cacheNameParam = searchParams.get("cache");
+            if (!cacheNameParam) {
+                this.enforcePinnedCamera();
+            }
+            return;
+        }
+
         const cx = searchParams.get("cx");
         const cy = searchParams.get("cy");
         const cz = searchParams.get("cz");
@@ -172,6 +207,7 @@ export class MapViewer {
     }
 
     init(): void {
+        this.enforcePinnedCamera();
         this.workerPool.loadCachedMapImages().then((mapImageUrls) => {
             mapImageUrls.forEach((value, key) => this.mapImageUrls.set(key, value));
         });
@@ -203,6 +239,7 @@ export class MapViewer {
 
         this.isNewTextureAnim = cache.info.game === "runescape" && cache.info.revision >= 681;
 
+        this.enforcePinnedCamera();
         this.renderer.initCache();
 
         this.updateSearchParams();
@@ -219,6 +256,26 @@ export class MapViewer {
      * @param newView Any of the items you want to move: Position, pitch, yaw
      */
     setCamera(newView: Partial<CameraView>): void {
+        if (this.pinnedView) {
+            if (newView.position) {
+                vec3.copy(this.camera.pos, newView.position);
+            }
+            if (newView.pitch !== undefined) {
+                this.camera.pitch = newView.pitch;
+            }
+            if (newView.yaw !== undefined) {
+                this.camera.yaw = newView.yaw;
+            }
+            if (newView.fov !== undefined) {
+                this.camera.fov = newView.fov;
+            }
+            if (newView.orthoZoom !== undefined) {
+                this.camera.orthoZoom = newView.orthoZoom;
+            }
+            this.clampPinnedCamera();
+            return;
+        }
+
         if (newView.position) {
             vec3.copy(this.camera.pos, newView.position);
         }
@@ -234,6 +291,44 @@ export class MapViewer {
         if (newView.orthoZoom !== undefined) {
             this.camera.orthoZoom = newView.orthoZoom;
         }
+        this.camera.updated = true;
+    }
+
+    enforcePinnedCamera(): void {
+        vec3.copy(this.camera.pos, LUMBRIDGE_CASTLE_CAMERA.position);
+        this.camera.pitch = LUMBRIDGE_CASTLE_CAMERA.pitch;
+        this.camera.yaw = LUMBRIDGE_CASTLE_CAMERA.yaw;
+        this.camera.updated = true;
+    }
+
+    clampPinnedCamera(): void {
+        this.camera.pos[0] = Math.max(
+            LUMBRIDGE_CASTLE_CAMERA.position[0] - PINNED_CAMERA_X_RANGE,
+            Math.min(LUMBRIDGE_CASTLE_CAMERA.position[0] + PINNED_CAMERA_X_RANGE, this.camera.pos[0]),
+        );
+        this.camera.pos[1] = Math.max(
+            LUMBRIDGE_CASTLE_CAMERA.position[1] - PINNED_CAMERA_Y_RANGE,
+            Math.min(LUMBRIDGE_CASTLE_CAMERA.position[1] + PINNED_CAMERA_Y_RANGE, this.camera.pos[1]),
+        );
+        this.camera.pos[2] = Math.max(
+            LUMBRIDGE_CASTLE_CAMERA.position[2] - PINNED_CAMERA_Z_RANGE,
+            Math.min(LUMBRIDGE_CASTLE_CAMERA.position[2] + PINNED_CAMERA_Z_RANGE, this.camera.pos[2]),
+        );
+        this.camera.pitch = Math.max(
+            LUMBRIDGE_CASTLE_CAMERA.pitch - PINNED_CAMERA_PITCH_RANGE,
+            Math.min(LUMBRIDGE_CASTLE_CAMERA.pitch + PINNED_CAMERA_PITCH_RANGE, this.camera.pitch),
+        );
+        this.camera.yaw = Math.max(
+            LUMBRIDGE_CASTLE_CAMERA.yaw - PINNED_CAMERA_YAW_RANGE,
+            Math.min(LUMBRIDGE_CASTLE_CAMERA.yaw + PINNED_CAMERA_YAW_RANGE, this.camera.yaw),
+        );
+        this.camera.updated = true;
+    }
+
+    resetPinnedCamera(): void {
+        vec3.copy(this.camera.pos, LUMBRIDGE_CASTLE_CAMERA.position);
+        this.camera.pitch = LUMBRIDGE_CASTLE_CAMERA.pitch;
+        this.camera.yaw = LUMBRIDGE_CASTLE_CAMERA.yaw;
         this.camera.updated = true;
     }
 

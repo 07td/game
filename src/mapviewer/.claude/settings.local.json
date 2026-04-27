@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(/Users/jesse/Projects/rs-map-viewer/**)",
+      "Read(/Users/jesse/Projects/rs-map-viewer/**)",
+      "Read(/Users/jesse/Projects/rs-map-viewer/**)",
+      "Read(/Users/jesse/Projects/rs-map-viewer/**)",
+      "mcp__ide__getDiagnostics"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
