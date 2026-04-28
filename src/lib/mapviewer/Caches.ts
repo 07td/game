@@ -1,8 +1,9 @@
 import { CacheFiles, ProgressListener } from "../rs/cache/CacheFiles";
 import { CacheInfo, getLatestCache } from "../rs/cache/CacheInfo";
 import { CacheType, detectCacheType } from "../rs/cache/CacheType";
+import { getAssetBaseUrl } from "../util/PublicUrl";
 
-const CACHE_PATH = `${process.env.PUBLIC_URL}/caches/`;
+const CACHE_PATH = `${getAssetBaseUrl()}/caches/`;
 
 export async function fetchCacheInfos(): Promise<CacheInfo[]> {
     const resp = await fetch(CACHE_PATH + "caches.json");

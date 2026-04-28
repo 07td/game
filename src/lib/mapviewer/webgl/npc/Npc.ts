@@ -49,6 +49,14 @@ export class Npc {
     tdMoveClientTicks: number = 0;
     tdRoute?: Array<{ x: number; y: number }>;
     tdEnemyId?: string;
+    tdAttackSeqId: number = -1;
+    tdCombatActive: boolean = false;
+    tdCombatTargetX?: number;
+    tdCombatTargetY?: number;
+    tdLocalSpeakerId?: string;
+    tdStatic: boolean = false;
+    tdWanderRadius: number = 0;
+    tdWanderCooldownTicks: number = (Math.random() * 40) | 0;
 
     constructor(
         readonly spawnX: number,
@@ -56,10 +64,14 @@ export class Npc {
         readonly level: number,
         readonly idleAnim: AnimationFrames,
         readonly walkAnim: AnimationFrames | undefined,
+        attackAnim: AnimationFrames | undefined,
         readonly npcType: NpcType,
         readonly idleSeqId: number,
         readonly walkSeqId: number,
+        attackSeqId: number = -1,
     ) {
+        this.attackAnim = attackAnim;
+        this.attackSeqId = attackSeqId;
         this.rotation = DIRECTION_ROTATIONS[npcType.spawnDirection];
 
         this.pathX[0] = clamp(spawnX, 0, 64 - npcType.size);
@@ -68,6 +80,9 @@ export class Npc {
         this.x = this.pathX[0] * 128 + npcType.size * 64;
         this.y = this.pathY[0] * 128 + npcType.size * 64;
     }
+
+    attackAnim: AnimationFrames | undefined;
+    attackSeqId: number;
 
     getSize(): number {
         return this.npcType.size;
@@ -126,6 +141,33 @@ export class Npc {
             return (this.npcType.loginScreenProps & 0x2) > 0 && this.walkSeqId !== -1;
         }
         return this.walkSeqId !== -1 && this.walkSeqId !== this.idleSeqId;
+    }
+
+    setTdCombatState(active: boolean, targetX?: number, targetY?: number): void {
+        const wasActive = this.tdCombatActive;
+        this.tdCombatActive = active;
+        if (active) {
+            this.tdMoveClientTicks = 0;
+            this.pathLength = 0;
+            this.serverPathLength = 0;
+
+            const combatSeqId =
+                this.tdAttackSeqId !== -1
+                    ? this.tdAttackSeqId
+                    : this.attackSeqId !== -1
+                    ? this.attackSeqId
+                    : this.walkSeqId !== -1
+                    ? this.walkSeqId
+                    : this.idleSeqId;
+            if (!wasActive && combatSeqId !== -1) {
+                this.movementFrame = 0;
+                this.movementFrameTick = 0;
+                this.movementLoop = 0;
+                this.movementSeqId = combatSeqId;
+            }
+        }
+        this.tdCombatTargetX = active ? targetX : undefined;
+        this.tdCombatTargetY = active ? targetY : undefined;
     }
 
     queuePathDir(dir: number, movementType: MovementType) {
@@ -194,6 +236,7 @@ export class Npc {
     }
 
     updateMovement(seqTypeLoader: SeqTypeLoader, seqFrameLoader: SeqFrameLoader) {
+        const previousMovementSeqId = this.movementSeqId;
         this.movementSeqId = this.idleSeqId;
         if (this.pathLength > 0) {
             const currX = this.x;
@@ -305,6 +348,52 @@ export class Npc {
             this.tdMoveClientTicks--;
         }
 
+        if (this.tdCombatActive) {
+            if (
+                this.tdCombatTargetX !== undefined &&
+                this.tdCombatTargetY !== undefined
+            ) {
+                const nextX = this.tdCombatTargetX;
+                const nextY = this.tdCombatTargetY;
+                if (this.x < nextX) {
+                    if (this.y < nextY) {
+                        this.orientation = 1280;
+                    } else if (this.y > nextY) {
+                        this.orientation = 1792;
+                    } else {
+                        this.orientation = 1536;
+                    }
+                } else if (this.x > nextX) {
+                    if (this.y < nextY) {
+                        this.orientation = 768;
+                    } else if (this.y > nextY) {
+                        this.orientation = 256;
+                    } else {
+                        this.orientation = 512;
+                    }
+                } else if (this.y < nextY) {
+                    this.orientation = 1024;
+                } else if (this.y > nextY) {
+                    this.orientation = 0;
+                }
+            }
+
+            const combatSeqId =
+                this.tdAttackSeqId !== -1
+                    ? this.tdAttackSeqId
+                    : this.attackSeqId !== -1
+                    ? this.attackSeqId
+                    : this.walkSeqId !== -1
+                    ? this.walkSeqId
+                    : this.idleSeqId;
+            if (combatSeqId !== -1 && previousMovementSeqId !== combatSeqId) {
+                this.movementFrame = 0;
+                this.movementFrameTick = 0;
+                this.movementLoop = 0;
+            }
+            this.movementSeqId = combatSeqId;
+        }
+
         const deltaRotation = (this.orientation - this.rotation) & 2047;
         if (deltaRotation !== 0) {
             const rotateDir = deltaRotation > 1024 ? -1 : 1;
@@ -398,6 +487,10 @@ export class Npc {
         borderSize: number,
         collisionMaps: CollisionMap[],
     ) {
+        if (this.tdStatic) {
+            return;
+        }
+
         if (this.tdEnemySlot >= 0) {
             return;
         }
@@ -512,36 +605,86 @@ export class Npc {
             return;
         }
 
-        const size = this.getSize();
+        if (this.tdLocalSpeakerId && this.tdWanderRadius > 0) {
+            const collisionMap = collisionMaps[this.level];
+
+            if (this.pathLength === 0 && this.serverPathLength === 0) {
+                if (this.tdWanderCooldownTicks > 0) {
+                    this.tdWanderCooldownTicks--;
+                } else if (this.canWalk()) {
+                    const planned = this.planWanderPath(
+                        pathfinder,
+                        borderSize,
+                        collisionMap,
+                        this.tdWanderRadius,
+                        6,
+                    );
+                    this.tdWanderCooldownTicks = planned
+                        ? 10 + ((Math.random() * 20) | 0)
+                        : 18 + ((Math.random() * 32) | 0);
+                }
+            }
+
+            this.followServerPath(borderSize, collisionMap);
+            return;
+        }
 
         const collisionMap = collisionMaps[this.level];
 
         if (this.canWalk() && Math.random() < 0.1) {
-            const deltaX = Math.round(Math.random() * 10.0 - 5.0);
-            const deltaY = Math.round(Math.random() * 10.0 - 5.0);
+            this.planWanderPath(pathfinder, borderSize, collisionMap, 5);
+        }
 
-            const srcX = this.pathX[0];
-            const srcY = this.pathY[0];
+        this.followServerPath(borderSize, collisionMap);
+    }
 
-            const spawnX = this.spawnX;
-            const spawnY = this.spawnY;
+    getAnimationFrames(): AnimationFrames {
+        const activeAttackSeqId = this.tdAttackSeqId !== -1 ? this.tdAttackSeqId : this.attackSeqId;
+        if (
+            this.attackAnim &&
+            activeAttackSeqId !== -1 &&
+            this.movementSeqId === activeAttackSeqId
+        ) {
+            return this.attackAnim;
+        }
+        return this.walkAnim && this.movementSeqId === this.walkSeqId
+            ? this.walkAnim
+            : this.idleAnim;
+    }
 
+    private planWanderPath(
+        pathfinder: Pathfinder,
+        borderSize: number,
+        collisionMap: CollisionMap,
+        wanderRadius: number,
+        attempts: number = 1,
+    ): boolean {
+        const size = this.getSize();
+        const srcX = this.pathX[0];
+        const srcY = this.pathY[0];
+        const spawnX = this.spawnX;
+        const spawnY = this.spawnY;
+
+        pathfinder.setNpcFlags(srcX, srcY, spawnX, spawnY, wanderRadius, borderSize, collisionMap);
+
+        let collisionStrategy = NORMAL_STRATEGY;
+        if (collisionMap.hasFlag(spawnX + borderSize, spawnY + borderSize, CollisionFlag.FLOOR)) {
+            collisionStrategy = BLOCKED_STATEGY;
+        }
+
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            const deltaX = Math.round(Math.random() * wanderRadius * 2 - wanderRadius);
+            const deltaY = Math.round(Math.random() * wanderRadius * 2 - wanderRadius);
             const targetX = clamp(spawnX + deltaX, 0, 64 - size - 1);
             const targetY = clamp(spawnY + deltaY, 0, 64 - size - 1);
+            if (targetX === srcX && targetY === srcY) {
+                continue;
+            }
 
             routeStrategy.approxDestX = targetX;
             routeStrategy.approxDestY = targetY;
             routeStrategy.destSizeX = size;
             routeStrategy.destSizeY = size;
-
-            pathfinder.setNpcFlags(srcX, srcY, spawnX, spawnY, 5, borderSize, collisionMap);
-
-            let collisionStrategy = NORMAL_STRATEGY;
-            if (
-                collisionMap.hasFlag(spawnX + borderSize, spawnY + borderSize, CollisionFlag.FLOOR)
-            ) {
-                collisionStrategy = BLOCKED_STATEGY;
-            }
 
             let steps = pathfinder.findPath(
                 srcX,
@@ -553,90 +696,76 @@ export class Npc {
                 CollisionFlag.BLOCK_NPCS,
                 true,
             );
-            if (steps > 0) {
-                if (steps > 24) {
-                    steps = 24;
-                }
-                for (let s = 0; s < steps; s++) {
-                    this.serverPathX[s] = pathfinder.bufferX[s];
-                    this.serverPathY[s] = pathfinder.bufferY[s];
-                    this.serverPathMovementType[s] = MovementType.WALK;
-                }
-                this.serverPathLength = steps;
+            if (steps <= 0) {
+                continue;
+            }
+
+            if (steps > 24) {
+                steps = 24;
+            }
+            for (let s = 0; s < steps; s++) {
+                this.serverPathX[s] = pathfinder.bufferX[s];
+                this.serverPathY[s] = pathfinder.bufferY[s];
+                this.serverPathMovementType[s] = MovementType.WALK;
+            }
+            this.serverPathLength = steps;
+            return true;
+        }
+
+        return false;
+    }
+
+    private followServerPath(borderSize: number, collisionMap: CollisionMap): void {
+        if (this.serverPathLength <= 0) {
+            return;
+        }
+
+        const size = this.getSize();
+        const currX = this.pathX[0];
+        const currY = this.pathY[0];
+        const targetX = this.serverPathX[this.serverPathLength - 1];
+        const targetY = this.serverPathY[this.serverPathLength - 1];
+        const deltaX = clamp(targetX - currX, -1, 1);
+        const deltaY = clamp(targetY - currY, -1, 1);
+        const nextX = currX + deltaX;
+        const nextY = currY + deltaY;
+
+        for (let flagX = currX; flagX < currX + size; flagX++) {
+            for (let flagY = currY; flagY < currY + size; flagY++) {
+                collisionMap.unflag(flagX + borderSize, flagY + borderSize, CollisionFlag.BLOCK_NPCS);
             }
         }
 
-        if (this.serverPathLength > 0) {
-            const currX = this.pathX[0];
-            const currY = this.pathY[0];
-            const targetX = this.serverPathX[this.serverPathLength - 1];
-            const targetY = this.serverPathY[this.serverPathLength - 1];
-            const deltaX = clamp(targetX - currX, -1, 1);
-            const deltaY = clamp(targetY - currY, -1, 1);
-            // const deltaX = 0;
-            // const deltaY = 0;
-            const nextX = currX + deltaX;
-            const nextY = currY + deltaY;
-
-            for (let flagX = currX; flagX < currX + size; flagX++) {
-                for (let flagY = currY; flagY < currY + size; flagY++) {
-                    collisionMap.unflag(
+        let canMove = true;
+        exit: for (let flagX = nextX; flagX < nextX + size; flagX++) {
+            for (let flagY = nextY; flagY < nextY + size; flagY++) {
+                if (
+                    collisionMap.hasFlag(
                         flagX + borderSize,
                         flagY + borderSize,
                         CollisionFlag.BLOCK_NPCS,
-                    );
+                    )
+                ) {
+                    canMove = false;
+                    break exit;
                 }
-            }
-
-            let canMove = true;
-            exit: for (let flagX = nextX; flagX < nextX + size; flagX++) {
-                for (let flagY = nextY; flagY < nextY + size; flagY++) {
-                    if (
-                        collisionMap.hasFlag(
-                            flagX + borderSize,
-                            flagY + borderSize,
-                            CollisionFlag.BLOCK_NPCS,
-                        )
-                    ) {
-                        canMove = false;
-                        break exit;
-                    }
-                }
-            }
-
-            if (canMove) {
-                for (let flagX = nextX; flagX < nextX + size; flagX++) {
-                    for (let flagY = nextY; flagY < nextY + size; flagY++) {
-                        collisionMap.flag(
-                            flagX + borderSize,
-                            flagY + borderSize,
-                            CollisionFlag.BLOCK_NPCS,
-                        );
-                    }
-                }
-
-                this.queuePath(nextX, nextY, MovementType.WALK);
-            } else {
-                for (let flagX = currX; flagX < currX + size; flagX++) {
-                    for (let flagY = currY; flagY < currY + size; flagY++) {
-                        collisionMap.flag(
-                            flagX + borderSize,
-                            flagY + borderSize,
-                            CollisionFlag.BLOCK_NPCS,
-                        );
-                    }
-                }
-            }
-
-            if (nextX === targetX && nextY === targetY) {
-                this.serverPathLength--;
             }
         }
-    }
 
-    getAnimationFrames(): AnimationFrames {
-        return this.walkAnim && this.movementSeqId === this.walkSeqId
-            ? this.walkAnim
-            : this.idleAnim;
+        const occupiedX = canMove ? nextX : currX;
+        const occupiedY = canMove ? nextY : currY;
+        for (let flagX = occupiedX; flagX < occupiedX + size; flagX++) {
+            for (let flagY = occupiedY; flagY < occupiedY + size; flagY++) {
+                collisionMap.flag(flagX + borderSize, flagY + borderSize, CollisionFlag.BLOCK_NPCS);
+            }
+        }
+
+        if (canMove) {
+            this.queuePath(nextX, nextY, MovementType.WALK);
+        }
+
+        if (nextX === targetX && nextY === targetY) {
+            this.serverPathLength--;
+        }
     }
 }

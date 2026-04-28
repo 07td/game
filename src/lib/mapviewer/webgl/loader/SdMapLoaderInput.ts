@@ -6,6 +6,7 @@ export type SdMapLoaderInput = {
     loadObjs: boolean;
     loadNpcs: boolean;
     tdOnlyNpcs: boolean;
+    tdNpcPoolIds: number[];
 
     smoothTerrain: boolean;
 

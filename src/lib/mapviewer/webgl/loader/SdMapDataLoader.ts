@@ -1,3 +1,11 @@
+import { LUMBRIDGE_TD_LOCAL_SPEAKERS } from "@rs-map-viewer/towerdefense/lumbridgeTdAmbient";
+import { LUMBRIDGE_TD_ENEMY_ARCHETYPES } from "@rs-map-viewer/towerdefense/lumbridgeTdEnemies";
+import {
+    LUMBRIDGE_TD_MAP_X,
+    LUMBRIDGE_TD_MAP_Y,
+    getLumbridgeTdRoute,
+} from "@rs-map-viewer/towerdefense/lumbridgeTdRoute";
+
 import { BasTypeLoader } from "../../../rs/config/bastype/BasTypeLoader";
 import { ContourGroundInfo, LocModelLoader } from "../../../rs/config/loctype/LocModelLoader";
 import { LocType } from "../../../rs/config/loctype/LocType";
@@ -11,12 +19,6 @@ import { LocEntity } from "../../../rs/scene/entity/LocEntity";
 import { TextureLoader } from "../../../rs/texture/TextureLoader";
 import { NpcSpawn, getMapNpcSpawns } from "../../data/npc/NpcSpawn";
 import { ObjSpawn, getMapObjSpawns } from "../../data/obj/ObjSpawn";
-import { LUMBRIDGE_TD_ENEMY_ARCHETYPES } from "@rs-map-viewer/towerdefense/lumbridgeTdEnemies";
-import {
-    LUMBRIDGE_TD_MAP_X,
-    LUMBRIDGE_TD_MAP_Y,
-    getLumbridgeTdRoute,
-} from "@rs-map-viewer/towerdefense/lumbridgeTdRoute";
 import { loadMinimapBlob } from "../../worker/MinimapData";
 import { RenderDataLoader, RenderDataResult } from "../../worker/RenderDataLoader";
 import { WorkerState } from "../../worker/RenderDataWorker";
@@ -47,6 +49,13 @@ const LUMBRIDGE_TD_POOL_SIZE_PER_ARCHETYPE = 24;
 
 type LumbridgeTdNpcSpawn = NpcSpawn & {
     tdEnemySlot: number;
+    attackSeqId?: number;
+};
+
+type LumbridgeTdLocalSpeakerSpawn = NpcSpawn & {
+    tdLocalSpeakerId: string;
+    tdStatic: boolean;
+    tdWanderRadius: number;
 };
 
 function loadHeightMapTextureData(scene: Scene): Int16Array {
@@ -551,6 +560,7 @@ function createNpcSpawnGroups(
 
     for (const spawns of groupedSpawns.values()) {
         const npcType = npcModelLoader.npcTypeLoader.load(spawns[0].id);
+        const attackSeqId = (spawns[0] as LumbridgeTdNpcSpawn).attackSeqId;
 
         const idleSeqId = npcType.getIdleSeqId(basTypeLoader);
         const walkSeqId = npcType.getWalkSeqId(basTypeLoader);
@@ -560,6 +570,15 @@ function createNpcSpawnGroups(
         if (walkSeqId !== -1 && walkSeqId !== idleSeqId) {
             walkAnim = addNpcAnimationFrames(npcModelLoader, sceneBuf, npcType, walkSeqId);
         }
+        let attackAnim: AnimationFrames | undefined;
+        if (
+            attackSeqId !== undefined &&
+            attackSeqId !== -1 &&
+            attackSeqId !== idleSeqId &&
+            attackSeqId !== walkSeqId
+        ) {
+            attackAnim = addNpcAnimationFrames(npcModelLoader, sceneBuf, npcType, attackSeqId);
+        }
 
         if (!idleAnim) {
             continue;
@@ -568,6 +587,8 @@ function createNpcSpawnGroups(
         groups.push({
             idleAnim,
             walkAnim,
+            attackAnim,
+            attackSeqId,
             spawns,
         });
     }
@@ -581,6 +602,7 @@ function createLumbridgeTdNpcData(
     sceneBuf: SceneBuffer,
     mapX: number,
     mapY: number,
+    tdNpcPoolIds: number[],
 ): NpcData[] {
     if (mapX !== LUMBRIDGE_TD_MAP_X || mapY !== LUMBRIDGE_TD_MAP_Y) {
         return [];
@@ -591,23 +613,28 @@ function createLumbridgeTdNpcData(
         return [];
     }
 
+    const poolNpcIds = Array.from(
+        new Set([
+            ...LUMBRIDGE_TD_ENEMY_ARCHETYPES.map((archetype) => archetype.npcId),
+            ...tdNpcPoolIds,
+        ]),
+    );
+
     const spawns: LumbridgeTdNpcSpawn[] = [];
-    for (
-        let archetypeIndex = 0;
-        archetypeIndex < LUMBRIDGE_TD_ENEMY_ARCHETYPES.length;
-        archetypeIndex++
-    ) {
-        const archetype = LUMBRIDGE_TD_ENEMY_ARCHETYPES[archetypeIndex];
-        const npcType = npcModelLoader.npcTypeLoader.load(archetype.npcId);
+    for (let archetypeIndex = 0; archetypeIndex < poolNpcIds.length; archetypeIndex++) {
+        const npcId = poolNpcIds[archetypeIndex];
+        const archetype = LUMBRIDGE_TD_ENEMY_ARCHETYPES.find((enemy) => enemy.npcId === npcId);
+        const npcType = npcModelLoader.npcTypeLoader.load(npcId);
         const routeOffset = Math.floor(npcType.size / 2);
         for (let poolIndex = 0; poolIndex < LUMBRIDGE_TD_POOL_SIZE_PER_ARCHETYPE; poolIndex++) {
             spawns.push({
-                id: archetype.npcId,
-                name: archetype.name,
+                id: npcId,
+                name: archetype?.name ?? npcType.name,
                 x: mapX * 64 + Math.max(0, Math.min(64 - npcType.size, route[0].x - routeOffset)),
                 y: mapY * 64 + Math.max(0, Math.min(64 - npcType.size, route[0].y - routeOffset)),
                 level: 0,
                 tdEnemySlot: archetypeIndex * LUMBRIDGE_TD_POOL_SIZE_PER_ARCHETYPE + poolIndex,
+                attackSeqId: archetype?.barricadeAttackSeqId,
             });
         }
     }
@@ -619,6 +646,44 @@ function createLumbridgeTdNpcData(
             npcData.push({
                 ...createNpcData(group, spawn),
                 tdEnemySlot: spawn.tdEnemySlot,
+            });
+        }
+    }
+
+    return npcData;
+}
+
+function createLumbridgeTdLocalSpeakerData(
+    npcModelLoader: NpcModelLoader,
+    basTypeLoader: BasTypeLoader,
+    sceneBuf: SceneBuffer,
+    mapX: number,
+    mapY: number,
+): NpcData[] {
+    if (mapX !== LUMBRIDGE_TD_MAP_X || mapY !== LUMBRIDGE_TD_MAP_Y) {
+        return [];
+    }
+
+    const spawns: LumbridgeTdLocalSpeakerSpawn[] = LUMBRIDGE_TD_LOCAL_SPEAKERS.map((speaker) => ({
+        id: speaker.npcId,
+        name: speaker.name,
+        x: mapX * 64 + speaker.tileX,
+        y: mapY * 64 + speaker.tileY,
+        level: speaker.level,
+        tdLocalSpeakerId: speaker.id,
+        tdStatic: false,
+        tdWanderRadius: speaker.wanderRadius,
+    }));
+
+    const npcData: NpcData[] = [];
+    const groups = createNpcSpawnGroups(npcModelLoader, basTypeLoader, sceneBuf, spawns);
+    for (const group of groups) {
+        for (const spawn of group.spawns as LumbridgeTdLocalSpeakerSpawn[]) {
+            npcData.push({
+                ...createNpcData(group, spawn),
+                tdLocalSpeakerId: spawn.tdLocalSpeakerId,
+                tdStatic: spawn.tdStatic,
+                tdWanderRadius: spawn.tdWanderRadius,
             });
         }
     }
@@ -646,6 +711,7 @@ export class SdMapDataLoader implements RenderDataLoader<SdMapLoaderInput, SdMap
             loadObjs,
             loadNpcs,
             tdOnlyNpcs,
+            tdNpcPoolIds,
             smoothTerrain,
             minimizeDrawCalls,
             loadedTextureIds,
@@ -749,7 +815,23 @@ export class SdMapDataLoader implements RenderDataLoader<SdMapLoaderInput, SdMap
             npcSpawns,
         );
         const npcs = createNpcDatas(npcSpawnGroups);
-        npcs.push(...createLumbridgeTdNpcData(npcModelLoader, basTypeLoader, sceneBuf, mapX, mapY));
+        npcs.push(
+            ...createLumbridgeTdNpcData(
+                npcModelLoader,
+                basTypeLoader,
+                sceneBuf,
+                mapX,
+                mapY,
+                tdNpcPoolIds,
+            ),
+            ...createLumbridgeTdLocalSpeakerData(
+                npcModelLoader,
+                basTypeLoader,
+                sceneBuf,
+                mapX,
+                mapY,
+            ),
+        );
 
         // Draw ranges
 
@@ -884,6 +966,7 @@ export class SdMapDataLoader implements RenderDataLoader<SdMapLoaderInput, SdMap
                 loadObjs,
                 loadNpcs,
                 tdOnlyNpcs,
+                tdNpcPoolIds,
 
                 smoothTerrain,
 

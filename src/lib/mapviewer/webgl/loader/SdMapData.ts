@@ -13,6 +13,7 @@ export type SdMapData = {
     loadObjs: boolean;
     loadNpcs: boolean;
     tdOnlyNpcs: boolean;
+    tdNpcPoolIds: number[];
 
     smoothTerrain: boolean;
 

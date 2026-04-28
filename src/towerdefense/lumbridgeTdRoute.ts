@@ -6,6 +6,7 @@ export type LumbridgeTdRoutePoint = {
 export const LUMBRIDGE_TD_MAP_X = 50;
 export const LUMBRIDGE_TD_MAP_Y = 50;
 export const LUMBRIDGE_TD_ROUTE_CHANGED = "lumbridge-td:route-changed";
+const LUMBRIDGE_TD_ROUTE_STORAGE_KEY = "gielinor-td:lumbridge-route:v1";
 
 const DEFAULT_LUMBRIDGE_TD_ROUTE: LumbridgeTdRoutePoint[] = [
     { x: 59, y: 36 },
@@ -26,12 +27,81 @@ const DEFAULT_LUMBRIDGE_TD_ROUTE: LumbridgeTdRoutePoint[] = [
     { x: 31, y: 4 },
 ];
 
-let lumbridgeTdRoute: LumbridgeTdRoutePoint[] = DEFAULT_LUMBRIDGE_TD_ROUTE.map((point) => ({
-    ...point,
-}));
+function clampRouteTileValue(value: number): number {
+    return Math.max(0, Math.min(63, value | 0));
+}
+
+function sanitizeLumbridgeTdRoute(route: readonly LumbridgeTdRoutePoint[]): LumbridgeTdRoutePoint[] {
+    return route.map((point) => ({
+        x: clampRouteTileValue(point.x),
+        y: clampRouteTileValue(point.y),
+    }));
+}
+
+function getRouteStorage(): Storage | undefined {
+    if (typeof window === "undefined") {
+        return undefined;
+    }
+
+    try {
+        return window.localStorage;
+    } catch {
+        return undefined;
+    }
+}
+
+function loadStoredLumbridgeTdRoute(): LumbridgeTdRoutePoint[] {
+    const storage = getRouteStorage();
+    if (!storage) {
+        return sanitizeLumbridgeTdRoute(DEFAULT_LUMBRIDGE_TD_ROUTE);
+    }
+
+    try {
+        const stored = storage.getItem(LUMBRIDGE_TD_ROUTE_STORAGE_KEY);
+        if (!stored) {
+            return sanitizeLumbridgeTdRoute(DEFAULT_LUMBRIDGE_TD_ROUTE);
+        }
+
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) {
+            return sanitizeLumbridgeTdRoute(DEFAULT_LUMBRIDGE_TD_ROUTE);
+        }
+
+        const route = parsed
+            .filter(
+                (point): point is LumbridgeTdRoutePoint =>
+                    point &&
+                    typeof point === "object" &&
+                    typeof point.x === "number" &&
+                    typeof point.y === "number",
+            )
+            .map((point) => ({ x: point.x, y: point.y }));
+
+        return route.length > 0
+            ? sanitizeLumbridgeTdRoute(route)
+            : sanitizeLumbridgeTdRoute(DEFAULT_LUMBRIDGE_TD_ROUTE);
+    } catch {
+        return sanitizeLumbridgeTdRoute(DEFAULT_LUMBRIDGE_TD_ROUTE);
+    }
+}
+
+function persistLumbridgeTdRoute(route: readonly LumbridgeTdRoutePoint[]): void {
+    const storage = getRouteStorage();
+    if (!storage) {
+        return;
+    }
+
+    try {
+        storage.setItem(LUMBRIDGE_TD_ROUTE_STORAGE_KEY, JSON.stringify(route));
+    } catch {
+        // Ignore persistence failures so the editor remains usable in private browsing modes.
+    }
+}
+
+let lumbridgeTdRoute: LumbridgeTdRoutePoint[] = loadStoredLumbridgeTdRoute();
 
 export function getDefaultLumbridgeTdRoute(): LumbridgeTdRoutePoint[] {
-    return DEFAULT_LUMBRIDGE_TD_ROUTE.map((point) => ({ ...point }));
+    return sanitizeLumbridgeTdRoute(DEFAULT_LUMBRIDGE_TD_ROUTE);
 }
 
 export function getLumbridgeTdRoute(): LumbridgeTdRoutePoint[] {
@@ -39,10 +109,12 @@ export function getLumbridgeTdRoute(): LumbridgeTdRoutePoint[] {
 }
 
 export function setLumbridgeTdRoute(route: LumbridgeTdRoutePoint[]): void {
-    lumbridgeTdRoute = route.map((point) => ({
-        x: Math.max(0, Math.min(63, point.x | 0)),
-        y: Math.max(0, Math.min(63, point.y | 0)),
-    }));
+    lumbridgeTdRoute = sanitizeLumbridgeTdRoute(route);
+    persistLumbridgeTdRoute(lumbridgeTdRoute);
+    if (typeof window === "undefined") {
+        return;
+    }
+
     window.dispatchEvent(
         new CustomEvent<LumbridgeTdRoutePoint[]>(LUMBRIDGE_TD_ROUTE_CHANGED, {
             detail: getLumbridgeTdRoute(),

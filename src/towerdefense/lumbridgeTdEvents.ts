@@ -1,3 +1,5 @@
+import type { MageTowerElement, TowerKind, WorldPoint } from "./lumbridgeTd";
+
 export const LUMBRIDGE_TD_START_WAVE = "lumbridge-td:start-wave";
 export const LUMBRIDGE_TD_RESET = "lumbridge-td:reset";
 export const LUMBRIDGE_TD_TOWERS_CHANGED = "lumbridge-td:towers-changed";
@@ -5,6 +7,7 @@ export const LUMBRIDGE_TD_ENEMY_SPAWNED = "lumbridge-td:enemy-spawned";
 export const LUMBRIDGE_TD_ENEMY_UPDATED = "lumbridge-td:enemy-updated";
 export const LUMBRIDGE_TD_ENEMY_REMOVED = "lumbridge-td:enemy-removed";
 export const LUMBRIDGE_TD_ENEMY_SELECTED = "lumbridge-td:enemy-selected";
+export const LUMBRIDGE_TD_PROJECTILE_SPAWNED = "lumbridge-td:projectile-spawned";
 
 export type LumbridgeTdStartWaveDetail = {
     wave: number;
@@ -20,9 +23,13 @@ export function emitLumbridgeTdReset(): void {
 }
 
 export type LumbridgeTdTowerState = {
+    id: string;
     padId: string;
     kind: string;
+    level: number;
     rotation: number;
+    hp?: number;
+    maxHp?: number;
     world: {
         x: number;
         y: number;
@@ -43,6 +50,7 @@ export type LumbridgeTdEnemySpawnDetail = {
     level: number;
     hp: number;
     maxHp: number;
+    barricadeAttackSeqId?: number;
 };
 
 export function emitLumbridgeTdEnemySpawned(detail: LumbridgeTdEnemySpawnDetail): void {
@@ -55,6 +63,9 @@ export type LumbridgeTdEnemyUpdateDetail = {
     y: number;
     hp: number;
     maxHp: number;
+    attackingBarricade?: boolean;
+    attackTargetX?: number;
+    attackTargetY?: number;
 };
 
 export function emitLumbridgeTdEnemyUpdated(detail: LumbridgeTdEnemyUpdateDetail): void {
@@ -73,4 +84,20 @@ export function emitLumbridgeTdEnemyRemoved(detail: LumbridgeTdEnemyRemovedDetai
 
 export function emitLumbridgeTdEnemySelected(enemyId: string): void {
     window.dispatchEvent(new CustomEvent(LUMBRIDGE_TD_ENEMY_SELECTED, { detail: { id: enemyId } }));
+}
+
+export type LumbridgeTdProjectileSpawnDetail = {
+    id: string;
+    kind: TowerKind;
+    element?: MageTowerElement;
+    sourceTowerId: string;
+    targetEnemyId: string;
+    fromWorld: WorldPoint;
+    toWorld: WorldPoint;
+    durationMs: number;
+    firedAtMs: number;
+};
+
+export function emitLumbridgeTdProjectileSpawned(detail: LumbridgeTdProjectileSpawnDetail): void {
+    window.dispatchEvent(new CustomEvent(LUMBRIDGE_TD_PROJECTILE_SPAWNED, { detail }));
 }

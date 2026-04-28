@@ -76,3 +76,12 @@
 .target-id {
     color: #ff5d40;
 }
+
+.option.unavailable,
+.option.unavailable .option-name,
+.option.unavailable .object-name,
+.option.unavailable .npc-name,
+.option.unavailable .item-name,
+.option.unavailable:hover .option-name {
+    color: #ff4040;
+}

@@ -5,6 +5,7 @@ import { NpcTypeLoader } from "../../config/npctype/NpcTypeLoader";
 import { ObjTypeLoader } from "../../config/objtype/ObjTypeLoader";
 import { QuestTypeLoader } from "../../config/questtype/QuestTypeLoader";
 import { SeqTypeLoader } from "../../config/seqtype/SeqTypeLoader";
+import { SpotAnimTypeLoader } from "../../config/spotanimtype/SpotAnimTypeLoader";
 import { VarBitTypeLoader } from "../../config/vartype/bit/VarBitTypeLoader";
 import { MapFileIndex } from "../../map/MapFileIndex";
 import { MapFileLoader } from "../../map/MapFileLoader";
@@ -30,6 +31,7 @@ export interface CacheLoaderFactory {
     getLocTypeLoader(): LocTypeLoader;
     getNpcTypeLoader(): NpcTypeLoader;
     getObjTypeLoader(): ObjTypeLoader;
+    getSpotAnimTypeLoader(): SpotAnimTypeLoader;
 
     getSeqTypeLoader(): SeqTypeLoader;
 

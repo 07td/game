@@ -6,6 +6,7 @@ export type LumbridgeTdEnemyArchetype = {
     hp: number;
     speed: number;
     reward: number;
+    barricadeAttackSeqId?: number;
 };
 
 export const LUMBRIDGE_TD_ENEMY_ARCHETYPES: LumbridgeTdEnemyArchetype[] = [
@@ -17,6 +18,7 @@ export const LUMBRIDGE_TD_ENEMY_ARCHETYPES: LumbridgeTdEnemyArchetype[] = [
         hp: 38,
         speed: 0.056,
         reward: 7,
+        barricadeAttackSeqId: 80,
     },
     {
         name: "Imp",
@@ -26,6 +28,7 @@ export const LUMBRIDGE_TD_ENEMY_ARCHETYPES: LumbridgeTdEnemyArchetype[] = [
         hp: 55,
         speed: 0.068,
         reward: 9,
+        barricadeAttackSeqId: 169,
     },
     {
         name: "Spider",
@@ -35,6 +38,7 @@ export const LUMBRIDGE_TD_ENEMY_ARCHETYPES: LumbridgeTdEnemyArchetype[] = [
         hp: 90,
         speed: 0.05,
         reward: 14,
+        barricadeAttackSeqId: 6249,
     },
     {
         name: "Hill Giant",
@@ -44,6 +48,7 @@ export const LUMBRIDGE_TD_ENEMY_ARCHETYPES: LumbridgeTdEnemyArchetype[] = [
         hp: 150,
         speed: 0.044,
         reward: 22,
+        barricadeAttackSeqId: 4652,
     },
     {
         name: "Moss Giant",
@@ -53,6 +58,7 @@ export const LUMBRIDGE_TD_ENEMY_ARCHETYPES: LumbridgeTdEnemyArchetype[] = [
         hp: 220,
         speed: 0.04,
         reward: 30,
+        barricadeAttackSeqId: 4658,
     },
     {
         name: "Demon",
@@ -62,5 +68,6 @@ export const LUMBRIDGE_TD_ENEMY_ARCHETYPES: LumbridgeTdEnemyArchetype[] = [
         hp: 330,
         speed: 0.043,
         reward: 45,
+        barricadeAttackSeqId: 64,
     },
 ];
