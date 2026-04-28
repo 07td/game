@@ -1,5 +1,28 @@
+import { TowerKind, getTowerLocId } from "@rs-map-viewer/towerdefense/lumbridgeTd";
+import { LUMBRIDGE_TD_ENEMY_ARCHETYPES } from "@rs-map-viewer/towerdefense/lumbridgeTdEnemies";
+import {
+    LUMBRIDGE_TD_ENEMY_REMOVED,
+    LUMBRIDGE_TD_ENEMY_SELECTED,
+    LUMBRIDGE_TD_ENEMY_SPAWNED,
+    LUMBRIDGE_TD_ENEMY_UPDATED,
+    LUMBRIDGE_TD_PROJECTILE_SPAWNED,
+    LUMBRIDGE_TD_RESET,
+    LUMBRIDGE_TD_START_WAVE,
+    LUMBRIDGE_TD_TOWERS_CHANGED,
+    LumbridgeTdEnemySpawnDetail,
+    LumbridgeTdEnemyUpdateDetail,
+    LumbridgeTdProjectileSpawnDetail,
+    LumbridgeTdTowerState,
+} from "@rs-map-viewer/towerdefense/lumbridgeTdEvents";
+import {
+    LUMBRIDGE_TD_MAP_X,
+    LUMBRIDGE_TD_MAP_Y,
+    LUMBRIDGE_TD_ROUTE_CHANGED,
+    LumbridgeTdRoutePoint,
+    getLumbridgeTdRoute,
+} from "@rs-map-viewer/towerdefense/lumbridgeTdRoute";
 import Denque from "denque";
-import { mat4, vec2, vec3, vec4 } from "gl-matrix";
+import { vec2, vec3, vec4 } from "gl-matrix";
 import { folder } from "leva";
 import { Schema } from "leva/dist/declarations/src/types";
 import {
@@ -16,6 +39,10 @@ import {
     VertexBuffer,
 } from "picogl";
 
+import {
+    TdProjectileModelCache,
+    getTdProjectileDefinition,
+} from "../../../towerdefense/tdProjectileModels";
 import { OsrsMenuEntry } from "../../components/rs/menu/OsrsMenu";
 import { createTextureArray } from "../../picogl/PicoTexture";
 import { MenuTargetType } from "../../rs/MenuEntry";
@@ -27,26 +54,6 @@ import { isTouchDevice, isWebGL2Supported, pixelRatio } from "../../util/DeviceU
 import { MapViewer } from "../MapViewer";
 import { MapViewerRenderer } from "../MapViewerRenderer";
 import { MapViewerRendererType, WEBGL } from "../MapViewerRenderers";
-import {
-    LUMBRIDGE_TD_ENEMY_REMOVED,
-    LUMBRIDGE_TD_ENEMY_SELECTED,
-    LUMBRIDGE_TD_ENEMY_SPAWNED,
-    LUMBRIDGE_TD_ENEMY_UPDATED,
-    LUMBRIDGE_TD_RESET,
-    LUMBRIDGE_TD_START_WAVE,
-    LUMBRIDGE_TD_TOWERS_CHANGED,
-    LumbridgeTdEnemySpawnDetail,
-    LumbridgeTdEnemyUpdateDetail,
-    LumbridgeTdTowerState,
-} from "@rs-map-viewer/towerdefense/lumbridgeTdEvents";
-import {
-    LUMBRIDGE_TD_MAP_X,
-    LUMBRIDGE_TD_MAP_Y,
-    LUMBRIDGE_TD_ROUTE_CHANGED,
-    LumbridgeTdRoutePoint,
-    getLumbridgeTdRoute,
-} from "@rs-map-viewer/towerdefense/lumbridgeTdRoute";
-import { AnimationFrames } from "./AnimationFrames";
 import { DrawRange, NULL_DRAW_RANGE } from "./DrawRange";
 import { InteractType } from "./InteractType";
 import { Interactions } from "./Interactions";
@@ -76,11 +83,87 @@ const TEXTURE_SIZE = 128;
 const INTERACT_BUFFER_COUNT = 2;
 const INTERACTION_RADIUS = 5;
 
-const TD_TOWER_LOC_IDS: Record<string, number> = {
-    bolt: 1939,
-    cannon: 1939,
-    mage: 1939,
+const TD_BARRICADE_FULL_LOC_ID = 4421;
+const TD_BARRICADE_DAMAGED_LOC_ID = 4422;
+const TD_BARRICADE_DAMAGED_THRESHOLD = 0.35;
+const TD_BARRICADE_DAMAGED_SEQ_ID = 475;
+const TD_CLASSIC_MULTICANNON_LOC_ID = 11868;
+const TD_CLASSIC_CANNON_SPIN_DURATION_MS = 1800;
+const TD_CLASSIC_CANNON_SPIN_COMPONENT_MAX_Y = -100;
+
+function normalizeRotationRadians(rotation: number): number {
+    const tau = Math.PI * 2;
+    const normalized = rotation % tau;
+    return normalized < 0 ? normalized + tau : normalized;
+}
+
+function getTdTowerVisual(tower: {
+    kind: string;
+    level?: number;
+    hp?: number;
+    maxHp?: number;
+}): { locId: number; seqId: number } | undefined {
+    if (tower.kind === "barricade") {
+        if (
+            typeof tower.hp === "number" &&
+            typeof tower.maxHp === "number" &&
+            tower.maxHp > 0 &&
+            tower.hp / tower.maxHp <= TD_BARRICADE_DAMAGED_THRESHOLD
+        ) {
+            return {
+                locId: TD_BARRICADE_DAMAGED_LOC_ID,
+                seqId: TD_BARRICADE_DAMAGED_SEQ_ID,
+            };
+        }
+        return {
+            locId: TD_BARRICADE_FULL_LOC_ID,
+            seqId: -1,
+        };
+    }
+
+    if (tower.kind === "cannon") {
+        return {
+            locId: TD_CLASSIC_MULTICANNON_LOC_ID,
+            seqId: -1,
+        };
+    }
+
+    const locId = getTowerLocId(tower.kind as TowerKind, tower.level);
+    if (locId === undefined) {
+        return undefined;
+    }
+    return {
+        locId,
+        seqId: -1,
+    };
+}
+
+type TdProjectileRuntime = LumbridgeTdProjectileSpawnDetail;
+type TdCannonSpinState = {
+    baseAngle: number;
+    startedAtMs: number;
 };
+
+type TdCombatDebugSnapshot = {
+    enemyId: string;
+    name: string;
+    combatActive: boolean;
+    movementSeqId: number;
+    movementFrame: number;
+    movementFrameTick: number;
+    attackSeqId: number;
+    tdAttackSeqId: number;
+    hasAttackAnim: boolean;
+    selectedAnim: "attack" | "walk" | "idle";
+    pathLength: number;
+    serverPathLength: number;
+    tdMoveClientTicks: number;
+    x: number;
+    y: number;
+    targetX?: number;
+    targetY?: number;
+};
+
 interface ColorRgb {
     r: number;
     g: number;
@@ -228,11 +311,28 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     tdCannonGroundOffset: number = 0;
     tdCannonDirty: boolean = true;
     tdCannonPlacements: Array<{
+        id: string;
         padId: string;
         world: vec3;
         kind: string;
+        locId: number;
+        seqId: number;
         rotation: number;
     }> = [];
+    tdProjectileModelCache?: TdProjectileModelCache;
+    tdProjectiles: Map<string, TdProjectileRuntime> = new Map();
+    tdProjectileInterleavedBuffer?: VertexBuffer;
+    tdProjectileIndexBuffer?: any;
+    tdProjectileModelInfoTexture?: Texture;
+    tdProjectileModelInfoTextureAlpha?: Texture;
+    tdProjectileVertexArray?: VertexArray;
+    tdProjectileIndexCount: number = 0;
+    tdProjectileDrawCall?: DrawCall;
+    tdProjectileAliveCount: number = 0;
+    tdProjectileRenderAttemptCount: number = 0;
+    tdProjectileRenderDrawCount: number = 0;
+    tdCombatDebug?: TdCombatDebugSnapshot;
+    tdCannonSpinByTowerId: Map<string, TdCannonSpinState> = new Map();
 
     constructor(public mapViewer: MapViewer) {
         super(mapViewer);
@@ -258,6 +358,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         window.addEventListener(LUMBRIDGE_TD_ENEMY_SPAWNED, this.onTdEnemySpawned as EventListener);
         window.addEventListener(LUMBRIDGE_TD_ENEMY_UPDATED, this.onTdEnemyUpdated as EventListener);
         window.addEventListener(LUMBRIDGE_TD_ENEMY_REMOVED, this.onTdEnemyRemoved as EventListener);
+        window.addEventListener(
+            LUMBRIDGE_TD_PROJECTILE_SPAWNED,
+            this.onTdProjectileSpawned as EventListener,
+        );
 
         this.app = PicoGL.createApp(this.canvas);
         this.gl = this.app.gl as WebGL2RenderingContext;
@@ -324,6 +428,13 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     onTdReset = () => {
         this.tdPendingSpawnCount = 0;
         this.tdEnemies.clear();
+        this.tdCannonSpinByTowerId.clear();
+        this.tdProjectiles.clear();
+        this.tdProjectileAliveCount = 0;
+        this.tdProjectileRenderAttemptCount = 0;
+        this.tdProjectileRenderDrawCount = 0;
+        this.tdCombatDebug = undefined;
+        this.clearTdProjectileBuffers();
         for (let i = 0; i < this.mapManager.visibleMapCount; i++) {
             this.resetTdEnemies(this.mapManager.visibleMaps[i]);
         }
@@ -370,6 +481,20 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         }
     };
 
+    onTdProjectileSpawned = (event: CustomEvent<LumbridgeTdProjectileSpawnDetail>) => {
+        const projectile = event.detail;
+        this.tdProjectiles.set(projectile.id, { ...projectile });
+        if (projectile.kind === "cannon") {
+            this.tdCannonSpinByTowerId.set(projectile.sourceTowerId, {
+                baseAngle: this.getTdCannonSpinAngle(
+                    projectile.sourceTowerId,
+                    projectile.firedAtMs,
+                ),
+                startedAtMs: projectile.firedAtMs,
+            });
+        }
+    };
+
     onTdRouteChanged = (event: CustomEvent<LumbridgeTdRoutePoint[]>) => {
         const route = event.detail;
         const tdMap = this.mapManager.getMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
@@ -388,15 +513,143 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
     onTdTowersChanged = (event: CustomEvent<LumbridgeTdTowerState>) => {
         this.tdCannonPlacements = event.detail
-            .filter((tower) => tower.world && TD_TOWER_LOC_IDS[tower.kind] !== undefined)
             .map((tower) => ({
-                padId: tower.padId,
-                kind: tower.kind,
-                rotation: tower.rotation ?? 0,
-                world: vec3.fromValues(tower.world.x, tower.world.y, tower.world.z),
+                tower,
+                visual: getTdTowerVisual(tower),
+            }))
+            .filter(
+                (
+                    entry,
+                ): entry is {
+                    tower: LumbridgeTdTowerState[number];
+                    visual: { locId: number; seqId: number };
+                } => !!entry.tower.world && entry.visual !== undefined,
+            )
+            .map((entry) => ({
+                id: entry.tower.id,
+                padId: entry.tower.padId,
+                kind: entry.tower.kind,
+                locId: entry.visual.locId,
+                seqId: entry.visual.seqId,
+                rotation: entry.tower.rotation ?? 0,
+                world: vec3.fromValues(
+                    entry.tower.world.x,
+                    entry.tower.world.y,
+                    entry.tower.world.z,
+                ),
             }));
+        const activeTowerIds = new Set(this.tdCannonPlacements.map((placement) => placement.id));
+        for (const towerId of this.tdCannonSpinByTowerId.keys()) {
+            if (!activeTowerIds.has(towerId)) {
+                this.tdCannonSpinByTowerId.delete(towerId);
+            }
+        }
         this.tdCannonDirty = true;
     };
+
+    pruneTdCannonSpinStates(timeMs: number): void {
+        for (const [towerId, state] of this.tdCannonSpinByTowerId) {
+            if (timeMs - state.startedAtMs >= TD_CLASSIC_CANNON_SPIN_DURATION_MS) {
+                this.tdCannonSpinByTowerId.delete(towerId);
+            }
+        }
+    }
+
+    getTdCannonSpinAngle(towerId: string, timeMs: number): number {
+        const state = this.tdCannonSpinByTowerId.get(towerId);
+        if (!state) {
+            return 0;
+        }
+
+        const elapsed = Math.max(0, timeMs - state.startedAtMs);
+        if (elapsed >= TD_CLASSIC_CANNON_SPIN_DURATION_MS) {
+            return normalizeRotationRadians(state.baseAngle);
+        }
+
+        return normalizeRotationRadians(
+            state.baseAngle + (elapsed / TD_CLASSIC_CANNON_SPIN_DURATION_MS) * Math.PI * 2,
+        );
+    }
+
+    applyClassicCannonSpinAnimation(model: Model, spinAngle: number): Model {
+        if (Math.abs(spinAngle) <= 1e-4) {
+            return model;
+        }
+
+        const vertexNeighbors: number[][] = Array.from(
+            { length: model.verticesCount },
+            () => [] as number[],
+        );
+        for (let face = 0; face < model.faceCount; face++) {
+            const a = model.indices1[face];
+            const b = model.indices2[face];
+            const c = model.indices3[face];
+            vertexNeighbors[a].push(b, c);
+            vertexNeighbors[b].push(a, c);
+            vertexNeighbors[c].push(a, b);
+        }
+
+        const visited = new Uint8Array(model.verticesCount);
+        const animatedVertexIndices: number[] = [];
+        let pivotX = 0;
+        let pivotZ = 0;
+
+        for (let startVertex = 0; startVertex < model.verticesCount; startVertex++) {
+            if (visited[startVertex]) {
+                continue;
+            }
+
+            const stack = [startVertex];
+            const component: number[] = [];
+            let componentMaxY = Number.NEGATIVE_INFINITY;
+            while (stack.length > 0) {
+                const vertex = stack.pop()!;
+                if (visited[vertex]) {
+                    continue;
+                }
+                visited[vertex] = 1;
+                component.push(vertex);
+                componentMaxY = Math.max(componentMaxY, model.verticesY[vertex]);
+                for (const neighbor of vertexNeighbors[vertex]) {
+                    if (!visited[neighbor]) {
+                        stack.push(neighbor);
+                    }
+                }
+            }
+
+            if (componentMaxY > TD_CLASSIC_CANNON_SPIN_COMPONENT_MAX_Y) {
+                continue;
+            }
+
+            for (const vertex of component) {
+                animatedVertexIndices.push(vertex);
+                pivotX += model.verticesX[vertex];
+                pivotZ += model.verticesZ[vertex];
+            }
+        }
+
+        if (animatedVertexIndices.length === 0) {
+            return model;
+        }
+
+        const pivotInv = 1 / animatedVertexIndices.length;
+        pivotX *= pivotInv;
+        pivotZ *= pivotInv;
+
+        const animatedModel = Model.copyAnimated(model, true, true);
+        const cosAngle = Math.cos(spinAngle);
+        const sinAngle = Math.sin(spinAngle);
+
+        for (const vertexIndex of animatedVertexIndices) {
+            const x = animatedModel.verticesX[vertexIndex] - pivotX;
+            const z = animatedModel.verticesZ[vertexIndex] - pivotZ;
+            animatedModel.verticesX[vertexIndex] = Math.round(x * cosAngle - z * sinAngle + pivotX);
+            animatedModel.verticesZ[vertexIndex] = Math.round(x * sinAngle + z * cosAngle + pivotZ);
+        }
+
+        animatedModel.invalidateBounds();
+        return animatedModel;
+    }
 
     async initShaders(): Promise<Program[]> {
         const hasMultiDraw = this.hasMultiDraw;
@@ -813,6 +1066,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             loadObjs: this.loadObjs,
             loadNpcs: this.loadNpcs,
             tdOnlyNpcs: this.mapViewer.pinnedView,
+            tdNpcPoolIds:
+                mapX === LUMBRIDGE_TD_MAP_X && mapY === LUMBRIDGE_TD_MAP_Y
+                    ? this.getTdNpcPoolIds()
+                    : [],
             smoothTerrain: this.smoothTerrain,
             minimizeDrawCalls: !this.hasMultiDraw,
             loadedTextureIds: this.loadedTextureIds,
@@ -876,14 +1133,42 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     }
 
     isValidMapData(mapData: SdMapData): boolean {
+        const expectedTdNpcPoolIds =
+            mapData.mapX === LUMBRIDGE_TD_MAP_X && mapData.mapY === LUMBRIDGE_TD_MAP_Y
+                ? this.getTdNpcPoolIds()
+                : [];
         return (
             mapData.cacheName === this.mapViewer.loadedCache.info.name &&
             mapData.maxLevel === this.maxLevel &&
             mapData.loadObjs === this.loadObjs &&
             mapData.loadNpcs === this.loadNpcs &&
             mapData.tdOnlyNpcs === this.mapViewer.pinnedView &&
+            this.areTdNpcPoolIdsEqual(mapData.tdNpcPoolIds, expectedTdNpcPoolIds) &&
             mapData.smoothTerrain === this.smoothTerrain
         );
+    }
+
+    getTdNpcPoolIds(): number[] {
+        const npcIds = new Set<number>();
+        for (const archetype of LUMBRIDGE_TD_ENEMY_ARCHETYPES) {
+            npcIds.add(archetype.npcId);
+        }
+        for (const enemy of this.tdEnemies.values()) {
+            npcIds.add(enemy.npcId);
+        }
+        return Array.from(npcIds).sort((left, right) => left - right);
+    }
+
+    areTdNpcPoolIdsEqual(left: number[], right: number[]): boolean {
+        if (left.length !== right.length) {
+            return false;
+        }
+        for (let index = 0; index < left.length; index++) {
+            if (left[index] !== right[index]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     clearMaps(): void {
@@ -1066,9 +1351,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.renderOpaqueNpcPass(npcDataTextureIndex, npcDataTexture);
         const opaqueNpcPassTime = performance.now() - opaqueNpcPassStart;
 
-        const tdCannonPassStart = performance.now();
-        this.renderTdCannonPass();
-        const tdCannonPassTime = performance.now() - tdCannonPassStart;
+        this.renderTdCannonPass(time);
 
         this.app.enable(PicoGL.BLEND);
         const transparentPassStart = performance.now();
@@ -1077,6 +1360,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         const transparentNpcPassStart = performance.now();
         this.renderTransparentNpcPass(npcDataTextureIndex, npcDataTexture);
         const transparentNpcPassTime = performance.now() - transparentNpcPassStart;
+        this.renderTdProjectilePass(timeSec);
 
         // Can't sample from renderbuffer so blit to a texture for sampling.
         this.app.readFramebuffer(this.framebuffer);
@@ -1179,11 +1463,18 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
     tickPass(time: number, ticksElapsed: number, clientTicksElapsed: number): void {
         const cycle = time / 0.02;
+        const timeMs = time * 1000;
 
         const seqFrameLoader = this.mapViewer.seqFrameLoader;
         const seqTypeLoader = this.mapViewer.seqTypeLoader;
 
         const pathfinder = this.mapViewer.pathfinder;
+
+        for (const [projectileId, projectile] of this.tdProjectiles) {
+            if (timeMs - projectile.firedAtMs >= projectile.durationMs) {
+                this.tdProjectiles.delete(projectileId);
+            }
+        }
 
         this.npcRenderCount = 0;
         for (let i = 0; i < this.mapManager.visibleMapCount; i++) {
@@ -1206,8 +1497,50 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 }
             }
 
+            this.updateTdCombatDebug(map);
             this.addNpcRenderData(map);
         }
+    }
+
+    updateTdCombatDebug(map: WebGLMapSquare): void {
+        if (map.mapX !== LUMBRIDGE_TD_MAP_X || map.mapY !== LUMBRIDGE_TD_MAP_Y) {
+            return;
+        }
+
+        const npc = map.npcs.find((candidate) => candidate.tdCombatActive && candidate.tdEnemyId);
+        if (!npc || !npc.tdEnemyId) {
+            this.tdCombatDebug = undefined;
+            return;
+        }
+
+        const enemy = this.tdEnemies.get(npc.tdEnemyId);
+        const activeAnim = npc.getAnimationFrames();
+        const selectedAnim =
+            npc.attackAnim && activeAnim === npc.attackAnim
+                ? "attack"
+                : npc.walkAnim && activeAnim === npc.walkAnim
+                ? "walk"
+                : "idle";
+
+        this.tdCombatDebug = {
+            enemyId: npc.tdEnemyId,
+            name: enemy?.name ?? npc.npcType.name,
+            combatActive: npc.tdCombatActive,
+            movementSeqId: npc.movementSeqId,
+            movementFrame: npc.movementFrame,
+            movementFrameTick: npc.movementFrameTick,
+            attackSeqId: npc.attackSeqId,
+            tdAttackSeqId: npc.tdAttackSeqId,
+            hasAttackAnim: !!npc.attackAnim,
+            selectedAnim,
+            pathLength: npc.pathLength,
+            serverPathLength: npc.serverPathLength,
+            tdMoveClientTicks: npc.tdMoveClientTicks,
+            x: npc.x,
+            y: npc.y,
+            targetX: npc.tdCombatTargetX,
+            targetY: npc.tdCombatTargetY,
+        };
     }
 
     addNpcRenderData(map: WebGLMapSquare) {
@@ -1286,6 +1619,11 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             availableNpc.tdActive = true;
             availableNpc.tdCompleted = false;
             availableNpc.tdMoveClientTicks = 0;
+            availableNpc.tdAttackSeqId = enemy.barricadeAttackSeqId ?? -1;
+            if (enemy.barricadeAttackSeqId !== undefined) {
+                availableNpc.attackSeqId = enemy.barricadeAttackSeqId;
+            }
+            availableNpc.setTdCombatState(false);
             this.setTdNpcWorldPosition(map, availableNpc, enemy.x, enemy.y);
             return true;
         } else {
@@ -1307,7 +1645,24 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
     updateTdNpcPosition(map: WebGLMapSquare, update: LumbridgeTdEnemyUpdateDetail): void {
         const npc = map.npcs.find((n) => n.tdEnemyId === update.id);
         if (npc) {
-            this.setTdNpcWorldPosition(map, npc, update.x, update.y);
+            const nextLocalX = (update.x - map.mapX * 64) * 128;
+            const nextLocalY = (update.y - map.mapY * 64) * 128;
+            const dx = nextLocalX - npc.x;
+            const dy = nextLocalY - npc.y;
+            const movedFarEnough = dx * dx + dy * dy > 24 * 24;
+
+            if (!update.attackingBarricade || movedFarEnough) {
+                this.setTdNpcWorldPosition(map, npc, update.x, update.y);
+            }
+            npc.setTdCombatState(
+                !!update.attackingBarricade,
+                update.attackTargetX !== undefined
+                    ? (update.attackTargetX - map.mapX * 64) * 128
+                    : undefined,
+                update.attackTargetY !== undefined
+                    ? (update.attackTargetY - map.mapY * 64) * 128
+                    : undefined,
+            );
         }
     }
 
@@ -1318,6 +1673,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             npc.tdCompleted = true;
             npc.tdEnemyId = undefined;
             npc.tdMoveClientTicks = 0;
+            npc.tdAttackSeqId = -1;
+            npc.setTdCombatState(false);
 
             npc.pathX[0] = npc.spawnX;
             npc.pathY[0] = npc.spawnY;
@@ -1342,6 +1699,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
                 npc.tdSpawnDelayTicks = 0;
                 npc.tdRouteIndex = 0;
                 npc.tdMoveClientTicks = 0;
+                npc.tdAttackSeqId = -1;
+                npc.setTdCombatState(false);
                 npc.pathLength = 0;
                 npc.serverPathLength = 0;
 
@@ -1459,7 +1818,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         }
     }
 
-    ensureTdCannonBuffer(): void {
+    ensureTdCannonBuffer(timeMs: number): void {
         if (!this.tdCannonDirty) {
             return;
         }
@@ -1489,7 +1848,12 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             );
         }
 
-        const sceneBuf = new SceneBuffer(this.mapViewer.textureLoader, new Map(), 64);
+        const textureIdIndexMap = new Map<number, number>();
+        for (let i = 0; i < this.textureIds.length; i++) {
+            textureIdIndexMap.set(this.textureIds[i], i);
+        }
+
+        const sceneBuf = new SceneBuffer(this.mapViewer.textureLoader, textureIdIndexMap, 64);
         const sceneModels: SceneModel[] = [];
         const tdMap = this.mapManager.getMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
         if (!(tdMap instanceof WebGLMapSquare)) {
@@ -1499,18 +1863,28 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
 
         this.tdCannonModel = undefined;
         for (const placement of this.tdCannonPlacements) {
-            const locId = TD_TOWER_LOC_IDS[placement.kind];
+            const locId = placement.locId;
             const locType = this.tdTowerLocModelLoader.locTypeLoader.load(locId);
-            const model = this.tdTowerLocModelLoader.getModelAnimated(
+            let animFrame = -1;
+            if (placement.seqId !== -1) {
+                animFrame = this.getTdSeqFrame(placement.seqId, timeMs);
+            }
+            let model = this.tdTowerLocModelLoader.getModelAnimated(
                 locType,
                 LocModelType.NORMAL,
                 placement.rotation,
-                -1,
-                -1,
+                placement.seqId,
+                animFrame,
             );
             if (!model) {
                 console.warn(`Unable to load TD tower loc model ${locId} for ${placement.kind}`);
                 continue;
+            }
+            if (placement.kind === "cannon") {
+                model = this.applyClassicCannonSpinAnimation(
+                    model,
+                    this.getTdCannonSpinAngle(placement.id, timeMs),
+                );
             }
 
             const localX = placement.world[0] - tdMap.mapX * 64;
@@ -1549,6 +1923,26 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             });
         }
 
+        const missingTextures = new Map<number, Int32Array>();
+        for (const textureId of sceneBuf.usedTextureIds) {
+            if (this.loadedTextureIds.has(textureId)) {
+                continue;
+            }
+
+            try {
+                missingTextures.set(
+                    textureId,
+                    this.mapViewer.textureLoader.getPixelsArgb(textureId, TEXTURE_SIZE, true, 1.0),
+                );
+            } catch (e) {
+                console.error("Failed loading TD tower texture", textureId, e);
+            }
+        }
+
+        if (missingTextures.size > 0) {
+            this.updateTextureArray(missingTextures);
+        }
+
         const drawCommands: DrawCommand[] = [
             ...sceneBuf.drawCommands,
             ...sceneBuf.drawCommandsAlpha,
@@ -1558,7 +1952,8 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             "TD tower objects",
             this.tdCannonPlacements.map((placement) => ({
                 kind: placement.kind,
-                locId: TD_TOWER_LOC_IDS[placement.kind],
+                locId: placement.locId,
+                seqId: placement.seqId,
                 world: Array.from(placement.world),
             })),
             "indices",
@@ -1616,9 +2011,19 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.tdCannonDirty = false;
     }
 
-    renderTdCannonPass(): void {
+    renderTdCannonPass(timeMs: number): void {
+        this.pruneTdCannonSpinStates(timeMs);
+        if (
+            this.tdCannonPlacements.some(
+                (placement) =>
+                    placement.seqId !== -1 ||
+                    (placement.kind === "cannon" && this.tdCannonSpinByTowerId.has(placement.id)),
+            )
+        ) {
+            this.tdCannonDirty = true;
+        }
         if (this.tdCannonDirty) {
-            this.ensureTdCannonBuffer();
+            this.ensureTdCannonBuffer(timeMs);
         }
         if (!this.tdCannonDrawCall || this.tdCannonIndexCount === 0 || !this.tdCannonModel) {
             return;
@@ -1628,6 +2033,338 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         }
 
         this.tdCannonDrawCall.draw();
+    }
+
+    getTdSeqFrame(seqId: number, timeMs: number): number {
+        const seqType = this.mapViewer.seqTypeLoader.load(seqId);
+        if (!seqType.frameIds || seqType.frameIds.length === 0 || seqType.isSkeletalSeq()) {
+            return -1;
+        }
+
+        let totalTicks = 0;
+        for (let i = 0; i < seqType.frameIds.length; i++) {
+            totalTicks += Math.max(1, seqType.getFrameLength(this.mapViewer.seqFrameLoader, i));
+        }
+        if (totalTicks <= 0) {
+            return 0;
+        }
+
+        let targetTick = Math.floor(timeMs / 20) % totalTicks;
+        for (let frame = 0; frame < seqType.frameIds.length; frame++) {
+            targetTick -= Math.max(1, seqType.getFrameLength(this.mapViewer.seqFrameLoader, frame));
+            if (targetTick < 0) {
+                return frame;
+            }
+        }
+
+        return seqType.frameIds.length - 1;
+    }
+
+    clearTdProjectileBuffers(): void {
+        this.tdProjectileDrawCall = undefined;
+        this.tdProjectileVertexArray?.delete();
+        this.tdProjectileVertexArray = undefined;
+        this.tdProjectileIndexBuffer?.delete?.();
+        this.tdProjectileIndexBuffer = undefined;
+        this.tdProjectileInterleavedBuffer?.delete();
+        this.tdProjectileInterleavedBuffer = undefined;
+        this.tdProjectileModelInfoTexture?.delete();
+        this.tdProjectileModelInfoTexture = undefined;
+        this.tdProjectileModelInfoTextureAlpha?.delete();
+        this.tdProjectileModelInfoTextureAlpha = undefined;
+        this.tdProjectileIndexCount = 0;
+    }
+
+    sampleTdTerrainHeight(worldX: number, worldZ: number, level: number = 0): number | undefined {
+        const mapX = Math.floor(worldX / 64);
+        const mapY = Math.floor(worldZ / 64);
+        const map = this.mapManager.getMap(mapX, mapY);
+        if (!(map instanceof WebGLMapSquare)) {
+            return undefined;
+        }
+
+        const localX = worldX - mapX * 64;
+        const localY = worldZ - mapY * 64;
+        const tileX = Math.floor(localX);
+        const tileY = Math.floor(localY);
+        const fracX = localX - tileX;
+        const fracY = localY - tileY;
+
+        const h00 = map.getTileHeight(level, tileX, tileY);
+        const h10 = map.getTileHeight(level, tileX + 1, tileY);
+        const h01 = map.getTileHeight(level, tileX, tileY + 1);
+        const h11 = map.getTileHeight(level, tileX + 1, tileY + 1);
+
+        const h0 = h00 + (h10 - h00) * fracX;
+        const h1 = h01 + (h11 - h01) * fracX;
+        return -(h0 + (h1 - h0) * fracY) / 16 + 0.02;
+    }
+
+    renderTdProjectilePass(timeSec: number): void {
+        this.tdProjectileAliveCount = 0;
+        this.tdProjectileRenderAttemptCount = 0;
+        this.tdProjectileRenderDrawCount = 0;
+
+        if (!this.mainProgram || !this.sceneUniformBuffer) {
+            return;
+        }
+
+        if (this.tdProjectiles.size === 0) {
+            this.clearTdProjectileBuffers();
+            return;
+        }
+
+        const tdMap = this.mapManager.getMap(LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y);
+        if (!(tdMap instanceof WebGLMapSquare)) {
+            this.clearTdProjectileBuffers();
+            return;
+        }
+
+        if (!this.tdProjectileModelCache) {
+            this.tdProjectileModelCache = new TdProjectileModelCache(this.mapViewer);
+        }
+
+        const textureIdIndexMap = new Map<number, number>();
+        for (let i = 0; i < this.textureIds.length; i++) {
+            textureIdIndexMap.set(this.textureIds[i], i);
+        }
+        const nowMs = timeSec * 1000;
+        const drawProjectileSceneBuffer = (sceneBuf: SceneBuffer) => {
+            if (
+                (sceneBuf.drawCommands.length === 0 && sceneBuf.drawCommandsAlpha.length === 0) ||
+                sceneBuf.indices.length === 0
+            ) {
+                return;
+            }
+
+            const interleavedBuffer = this.app.createInterleavedBuffer(
+                12,
+                sceneBuf.vertexBuf.byteArray(),
+            );
+            const indexBuffer = this.app.createIndexBuffer(
+                PicoGL.UNSIGNED_INT,
+                new Uint32Array(sceneBuf.indices),
+            );
+            const vertexArray = this.app
+                .createVertexArray()
+                .vertexAttributeBuffer(0, interleavedBuffer, {
+                    type: PicoGL.UNSIGNED_INT,
+                    size: 3,
+                    stride: 12,
+                    integer: true as any,
+                })
+                .indexBuffer(indexBuffer);
+
+            const buildProjectileDrawCall = (
+                program: Program,
+                drawCommands: DrawCommand[],
+                modelInfoTexture: Texture,
+            ): DrawCall => {
+                const drawCall = this.app
+                    .createDrawCall(program, vertexArray)
+                    .uniformBlock("SceneUniforms", this.sceneUniformBuffer!);
+                drawCall
+                    .texture("u_textures", this.textureArray!)
+                    .texture("u_textureMaterials", this.textureMaterials!)
+                    .texture("u_heightMap", tdMap.heightMapTexture)
+                    .texture("u_modelInfoTexture", modelInfoTexture)
+                    .uniform("u_mapPos", vec2.fromValues(tdMap.mapX, tdMap.mapY))
+                    .uniform("u_timeLoaded", tdMap.timeLoaded)
+                    .uniform("u_drawIdOffset", 0);
+                if (this.hasMultiDraw) {
+                    drawCall.drawRanges(
+                        ...drawCommands.map((cmd) => [
+                            cmd.offset,
+                            cmd.elements,
+                            cmd.instances.length,
+                        ]),
+                    );
+                }
+                return drawCall;
+            };
+
+            let opaqueDrawCall: DrawCall | undefined;
+            let opaqueModelInfoTexture: Texture | undefined;
+            const opaqueDrawRanges = sceneBuf.drawCommands.map((cmd) => [
+                cmd.offset,
+                cmd.elements,
+                cmd.instances.length,
+            ]);
+            if (sceneBuf.drawCommands.length > 0) {
+                const modelInfoTextureData = createModelInfoTextureData(sceneBuf.drawCommands);
+                opaqueModelInfoTexture = this.app.createTexture2D(
+                    modelInfoTextureData,
+                    16,
+                    Math.max(Math.ceil(modelInfoTextureData.length / 16 / 4), 1),
+                    {
+                        internalFormat: PicoGL.RGBA16UI,
+                        minFilter: PicoGL.NEAREST,
+                        magFilter: PicoGL.NEAREST,
+                    },
+                );
+                opaqueDrawCall = buildProjectileDrawCall(
+                    this.mainProgram!,
+                    sceneBuf.drawCommands,
+                    opaqueModelInfoTexture,
+                );
+            }
+
+            let alphaDrawCall: DrawCall | undefined;
+            let alphaModelInfoTexture: Texture | undefined;
+            const alphaDrawRanges = sceneBuf.drawCommandsAlpha.map((cmd) => [
+                cmd.offset,
+                cmd.elements,
+                cmd.instances.length,
+            ]);
+            if (sceneBuf.drawCommandsAlpha.length > 0 && this.mainAlphaProgram) {
+                const modelInfoTextureDataAlpha = createModelInfoTextureData(
+                    sceneBuf.drawCommandsAlpha,
+                );
+                alphaModelInfoTexture = this.app.createTexture2D(
+                    modelInfoTextureDataAlpha,
+                    16,
+                    Math.max(Math.ceil(modelInfoTextureDataAlpha.length / 16 / 4), 1),
+                    {
+                        internalFormat: PicoGL.RGBA16UI,
+                        minFilter: PicoGL.NEAREST,
+                        magFilter: PicoGL.NEAREST,
+                    },
+                );
+                alphaDrawCall = buildProjectileDrawCall(
+                    this.mainAlphaProgram,
+                    sceneBuf.drawCommandsAlpha,
+                    alphaModelInfoTexture,
+                );
+            }
+
+            if (opaqueDrawCall) {
+                this.draw(opaqueDrawCall, opaqueDrawRanges);
+            }
+            if (alphaDrawCall) {
+                this.draw(alphaDrawCall, alphaDrawRanges);
+            }
+
+            opaqueModelInfoTexture?.delete();
+            alphaModelInfoTexture?.delete();
+            vertexArray.delete();
+            indexBuffer.delete?.();
+            interleavedBuffer.delete();
+        };
+
+        const wasCullBackFace = this.cullBackFace;
+        this.app.disable(PicoGL.CULL_FACE);
+
+        for (const projectile of this.tdProjectiles.values()) {
+            const elapsedMs = Math.max(0, nowMs - projectile.firedAtMs);
+            if (elapsedMs >= projectile.durationMs) {
+                continue;
+            }
+            this.tdProjectileAliveCount++;
+
+            const definition = getTdProjectileDefinition(projectile);
+            const model = this.tdProjectileModelCache.getModel(
+                projectile,
+                elapsedMs,
+                projectile.durationMs,
+            );
+            if (!model) {
+                continue;
+            }
+            this.tdProjectileRenderAttemptCount++;
+
+            const targetEnemy = this.tdEnemies.get(projectile.targetEnemyId);
+            const fromX = projectile.fromWorld.x;
+            const fromZ = projectile.fromWorld.z;
+            const toX = targetEnemy?.x ?? projectile.toWorld.x;
+            const toZ = targetEnemy?.y ?? projectile.toWorld.z;
+
+            const progress = Math.max(
+                0,
+                Math.min(1, elapsedMs / Math.max(1, projectile.durationMs)),
+            );
+            const worldX = fromX + (toX - fromX) * progress;
+            const worldZ = fromZ + (toZ - fromZ) * progress;
+
+            const targetGround =
+                this.sampleTdTerrainHeight(toX, toZ, targetEnemy?.level ?? 0) ??
+                projectile.toWorld.y;
+            const targetY = targetGround - definition.targetLift;
+            const baseY = projectile.fromWorld.y + (targetY - projectile.fromWorld.y) * progress;
+            const worldY = baseY - Math.sin(progress * Math.PI) * definition.arcHeight;
+
+            const dx = toX - fromX;
+            const dz = toZ - fromZ;
+            if (Math.abs(dx) > 1e-4 || Math.abs(dz) > 1e-4) {
+                const angle = Math.atan2(-dx, -dz);
+                const rsAngle = (((angle / (Math.PI * 2)) * 2048) | 0) & 2047;
+                model.rotate((rsAngle + definition.yawOffset) & 2047);
+            }
+
+            const localX = worldX - tdMap.mapX * 64;
+            const localZ = worldZ - tdMap.mapY * 64;
+            const sceneModel: SceneModel = {
+                model,
+                sceneHeight: worldY * 128,
+                lowDetail: false,
+                forceMerge: false,
+                sceneX: localX * 128,
+                sceneZ: localZ * 128,
+                heightOffset: 0,
+                level: 0,
+                contourGround: ContourGroundType.NONE,
+                priority: 12,
+                interactType: InteractType.NONE,
+                interactId: 0xffff,
+            };
+
+            const sceneBuf = new SceneBuffer(this.mapViewer.textureLoader, textureIdIndexMap, 128);
+            sceneBuf.addModelGroup({
+                transparent: false,
+                lowDetail: false,
+                level: 0,
+                priority: 12,
+                models: [sceneModel],
+            });
+            sceneBuf.addModelGroup({
+                transparent: true,
+                lowDetail: false,
+                level: 0,
+                priority: 12,
+                models: [sceneModel],
+            });
+
+            const missingTextures = new Map<number, Int32Array>();
+            for (const textureId of sceneBuf.usedTextureIds) {
+                if (this.loadedTextureIds.has(textureId)) {
+                    continue;
+                }
+
+                try {
+                    missingTextures.set(
+                        textureId,
+                        this.mapViewer.textureLoader.getPixelsArgb(
+                            textureId,
+                            TEXTURE_SIZE,
+                            true,
+                            1.0,
+                        ),
+                    );
+                } catch (e) {
+                    console.error("Failed loading TD projectile texture", textureId, e);
+                }
+            }
+
+            if (missingTextures.size > 0) {
+                this.updateTextureArray(missingTextures);
+            }
+
+            drawProjectileSceneBuffer(sceneBuf);
+            this.tdProjectileRenderDrawCount++;
+        }
+
+        if (wasCullBackFace) {
+            this.app.enable(PicoGL.CULL_FACE);
+        }
     }
 
     updateNpcDataTexture() {
@@ -2091,6 +2828,10 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
             LUMBRIDGE_TD_ENEMY_REMOVED,
             this.onTdEnemyRemoved as EventListener,
         );
+        window.removeEventListener(
+            LUMBRIDGE_TD_PROJECTILE_SPAWNED,
+            this.onTdProjectileSpawned as EventListener,
+        );
         super.cleanUp();
         this.mapViewer.workerPool.resetLoader(this.dataLoader);
 
@@ -2114,6 +2855,7 @@ export class WebGLMapViewerRenderer extends MapViewerRenderer<WebGLMapSquare> {
         this.tdCannonIndexBuffer = undefined;
         this.tdCannonInterleavedBuffer?.delete();
         this.tdCannonInterleavedBuffer = undefined;
+        this.clearTdProjectileBuffers();
 
         // Uniforms
         this.sceneUniformBuffer?.delete();

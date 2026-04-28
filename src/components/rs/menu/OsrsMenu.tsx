@@ -17,6 +17,7 @@ function getTargetClassName(type: MenuTargetType): string {
 }
 
 export interface OsrsMenuEntry extends MenuEntry {
+    className?: string;
     onClick?: (entry: MenuEntry) => void;
 }
 
@@ -34,13 +35,7 @@ function onContextMenu(e: React.MouseEvent) {
 
 const BORDER_SIZE = 10;
 
-export function OsrsMenu({
-    x,
-    y,
-    entries,
-    tooltip,
-    debugId,
-}: OsrsMenuProps): JSX.Element | null {
+export function OsrsMenu({ x, y, entries, tooltip, debugId }: OsrsMenuProps): JSX.Element | null {
     const [realX, setX] = useState(x);
     const [realY, setY] = useState(y);
 
@@ -114,7 +109,7 @@ export function OsrsMenu({
     const optionElements = entries.map((entry, index) => {
         return (
             <div
-                className="option"
+                className={["option", entry.className].filter(Boolean).join(" ")}
                 key={entry.option + "-" + entry.targetId + "-" + index}
                 data-index={index}
                 onClick={onOptionClicked}

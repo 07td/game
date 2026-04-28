@@ -4,6 +4,28 @@ import { Type } from "../Type";
 export class BasType extends Type {
     idleSeqId = -1;
     walkSeqId = -1;
+    crawlSeqId = -1;
+    crawlBackSeqId = -1;
+    crawlLeftSeqId = -1;
+    crawlRightSeqId = -1;
+    runSeqId = -1;
+    runBackSeqId = -1;
+    runLeftSeqId = -1;
+    runRightSeqId = -1;
+    idleLeftSeqId = -1;
+    idleRightSeqId = -1;
+    walkBackSeqId = -1;
+    walkLeftSeqId = -1;
+    walkRightSeqId = -1;
+    op43SeqId = -1;
+    op44SeqId = -1;
+    op45SeqId = -1;
+    op46SeqId = -1;
+    op47SeqId = -1;
+    op48SeqId = -1;
+    op49SeqId = -1;
+    op50SeqId = -1;
+    op51SeqId = -1;
 
     modelRotateTranslate?: number[][];
 
@@ -18,21 +40,21 @@ export class BasType extends Type {
                 this.walkSeqId = -1;
             }
         } else if (opcode === 2) {
-            const crawlSeqId = buffer.readUnsignedShort();
+            this.crawlSeqId = buffer.readUnsignedShort();
         } else if (opcode === 3) {
-            const crawlBackSeqId = buffer.readUnsignedShort();
+            this.crawlBackSeqId = buffer.readUnsignedShort();
         } else if (opcode === 4) {
-            const crawlLeftSeqId = buffer.readUnsignedShort();
+            this.crawlLeftSeqId = buffer.readUnsignedShort();
         } else if (opcode === 5) {
-            const crawlRightSeqId = buffer.readUnsignedShort();
+            this.crawlRightSeqId = buffer.readUnsignedShort();
         } else if (opcode === 6) {
-            const runSeqId = buffer.readUnsignedShort();
+            this.runSeqId = buffer.readUnsignedShort();
         } else if (opcode === 7) {
-            const runBackSeqId = buffer.readUnsignedShort();
+            this.runBackSeqId = buffer.readUnsignedShort();
         } else if (opcode === 8) {
-            const runLeftSeqId = buffer.readUnsignedShort();
+            this.runLeftSeqId = buffer.readUnsignedShort();
         } else if (opcode === 9) {
-            const runRightSeqId = buffer.readUnsignedShort();
+            this.runRightSeqId = buffer.readUnsignedShort();
         } else if (opcode === 26) {
             const anInt1059 = buffer.readUnsignedByte() * 4;
             const anInt1050 = buffer.readUnsignedByte() * 4;
@@ -72,33 +94,33 @@ export class BasType extends Type {
         } else if (opcode === 37) {
             const movementAcceleration = buffer.readUnsignedByte();
         } else if (opcode === 38) {
-            const idleLeftSeqId = buffer.readUnsignedShort();
+            this.idleLeftSeqId = buffer.readUnsignedShort();
         } else if (opcode === 39) {
-            const idleRightSeqId = buffer.readUnsignedShort();
+            this.idleRightSeqId = buffer.readUnsignedShort();
         } else if (opcode === 40) {
-            const walkBackSeqId = buffer.readUnsignedShort();
+            this.walkBackSeqId = buffer.readUnsignedShort();
         } else if (opcode === 41) {
-            const walkLeftSeqId = buffer.readUnsignedShort();
+            this.walkLeftSeqId = buffer.readUnsignedShort();
         } else if (opcode === 42) {
-            const walkRightSeqId = buffer.readUnsignedShort();
+            this.walkRightSeqId = buffer.readUnsignedShort();
         } else if (opcode === 43) {
-            buffer.readUnsignedShort();
+            this.op43SeqId = buffer.readUnsignedShort();
         } else if (opcode === 44) {
-            buffer.readUnsignedShort();
+            this.op44SeqId = buffer.readUnsignedShort();
         } else if (opcode === 45) {
-            buffer.readUnsignedShort();
+            this.op45SeqId = buffer.readUnsignedShort();
         } else if (opcode === 46) {
-            const anInt203 = buffer.readUnsignedShort();
+            this.op46SeqId = buffer.readUnsignedShort();
         } else if (opcode === 47) {
-            const anInt198 = buffer.readUnsignedShort();
+            this.op47SeqId = buffer.readUnsignedShort();
         } else if (opcode === 48) {
-            const anInt194 = buffer.readUnsignedShort();
+            this.op48SeqId = buffer.readUnsignedShort();
         } else if (opcode === 49) {
-            const anInt211 = buffer.readUnsignedShort();
+            this.op49SeqId = buffer.readUnsignedShort();
         } else if (opcode === 50) {
-            const anInt202 = buffer.readUnsignedShort();
+            this.op50SeqId = buffer.readUnsignedShort();
         } else if (opcode === 51) {
-            const anInt222 = buffer.readUnsignedShort();
+            this.op51SeqId = buffer.readUnsignedShort();
         } else if (opcode === 52) {
             const count = buffer.readUnsignedByte();
             for (let i = 0; i < count; i++) {

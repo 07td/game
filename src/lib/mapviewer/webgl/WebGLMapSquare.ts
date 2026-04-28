@@ -1,3 +1,4 @@
+import { getLumbridgeTdRoute } from "@rs-map-viewer/towerdefense/lumbridgeTdRoute";
 import { vec2 } from "gl-matrix";
 import PicoGL, {
     DrawCall,
@@ -16,7 +17,6 @@ import { getMapSquareId } from "../../rs/map/MapFileIndex";
 import { CollisionFlag } from "../../rs/pathfinder/flag/CollisionFlag";
 import { CollisionMap } from "../../rs/scene/CollisionMap";
 import { Scene } from "../../rs/scene/Scene";
-import { getLumbridgeTdRoute } from "@rs-map-viewer/towerdefense/lumbridgeTdRoute";
 import { DrawRange, newDrawRange } from "./DrawRange";
 import { SdMapData } from "./loader/SdMapData";
 import { LocAnimated } from "./loc/LocAnimated";
@@ -222,13 +222,20 @@ export class WebGLMapSquare {
                 npc.level,
                 npc.idleAnim,
                 npc.walkAnim,
+                npc.attackAnim,
                 npcType,
                 npcType.getIdleSeqId(basTypeLoader),
                 npcType.getWalkSeqId(basTypeLoader),
+                npc.attackSeqId,
             );
             if (npc.tdEnemySlot !== undefined) {
                 npcEntity.tdEnemySlot = npc.tdEnemySlot;
                 npcEntity.tdRoute = getLumbridgeTdRoute();
+            }
+            if (npc.tdLocalSpeakerId !== undefined) {
+                npcEntity.tdLocalSpeakerId = npc.tdLocalSpeakerId;
+                npcEntity.tdStatic = npc.tdStatic ?? false;
+                npcEntity.tdWanderRadius = npc.tdWanderRadius ?? 0;
             }
             npcs.push(npcEntity);
         }

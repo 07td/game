@@ -32,7 +32,7 @@ This standalone project uses the rs-map-viewer as a library to create an immersi
   - Cooldown: 650ms
   - Range: Medium
   
-- **Wizard Tower**: High damage, slower attacks
+- **Obelisk of Air**: High damage, slower attacks, upgrades through Water, Earth, and Fire
   - Cost: 55 gold
   - Damage: 38
   - Cooldown: 1200ms

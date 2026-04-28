@@ -9,7 +9,12 @@ export type NpcData = {
     level: number;
     idleAnim: AnimationFrames;
     walkAnim: AnimationFrames | undefined;
+    attackAnim?: AnimationFrames;
+    attackSeqId?: number;
     tdEnemySlot?: number;
+    tdLocalSpeakerId?: string;
+    tdStatic?: boolean;
+    tdWanderRadius?: number;
 };
 
 export function createNpcDatas(groups: NpcSpawnGroup[]): NpcData[] {
@@ -35,5 +40,7 @@ export function createNpcData(group: NpcSpawnGroup, spawn: NpcSpawn): NpcData {
         level,
         idleAnim: group.idleAnim,
         walkAnim: group.walkAnim,
+        attackAnim: group.attackAnim,
+        attackSeqId: group.attackSeqId,
     };
 }

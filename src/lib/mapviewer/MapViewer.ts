@@ -1,6 +1,7 @@
 import { vec3 } from "gl-matrix";
 import { URLSearchParamsInit } from "react-router-dom";
 
+import { LUMBRIDGE_TD_MAP_X, LUMBRIDGE_TD_MAP_Y } from "../../towerdefense/lumbridgeTdRoute";
 import { OsrsMenuEntry } from "../components/rs/menu/OsrsMenu";
 import { MenuTargetType } from "../rs/MenuEntry";
 import { CacheSystem } from "../rs/cache/CacheSystem";
@@ -10,12 +11,14 @@ import { LocTypeLoader } from "../rs/config/loctype/LocTypeLoader";
 import { NpcTypeLoader } from "../rs/config/npctype/NpcTypeLoader";
 import { ObjTypeLoader } from "../rs/config/objtype/ObjTypeLoader";
 import { SeqTypeLoader } from "../rs/config/seqtype/SeqTypeLoader";
+import { SpotAnimTypeLoader } from "../rs/config/spotanimtype/SpotAnimTypeLoader";
 import { VarManager } from "../rs/config/vartype/VarManager";
 import { MapFileIndex, getMapSquareId } from "../rs/map/MapFileIndex";
 import { SeqFrameLoader } from "../rs/model/seq/SeqFrameLoader";
 import { Pathfinder } from "../rs/pathfinder/Pathfinder";
 import { TextureLoader } from "../rs/texture/TextureLoader";
 import { isTouchDevice, isWallpaperEngine } from "../util/DeviceUtil";
+import { getAssetBaseUrl } from "../util/PublicUrl";
 import { CacheList, LoadedCache } from "./Caches";
 import { Camera, CameraView, ProjectionType } from "./Camera";
 import { InputManager } from "./InputManager";
@@ -27,20 +30,23 @@ import { ObjSpawn } from "./data/obj/ObjSpawn";
 import { RenderDataWorkerPool } from "./worker/RenderDataWorkerPool";
 
 const DEFAULT_RENDER_DISTANCE = isWallpaperEngine ? 512 : 128;
-const PINNED_CAMERA_X_RANGE = 26;
-const PINNED_CAMERA_Y_RANGE = 18;
-const PINNED_CAMERA_Z_RANGE = 26;
-const PINNED_CAMERA_PITCH_RANGE = 110;
-const PINNED_CAMERA_YAW_RANGE = 220;
 
-const CACHED_MAP_IMAGE_PREFIX = `${process.env.PUBLIC_URL}/map-images/`;
+const CACHED_MAP_IMAGE_PREFIX = `${getAssetBaseUrl()}/map-images/`;
 const LUMBRIDGE_CASTLE_CAMERA: CameraView = {
     position: vec3.fromValues(3242, -26, 3202),
     pitch: -245,
     yaw: 1862,
-    fov: 90,
+    fov: 100,
     orthoZoom: 15,
 };
+const PINNED_CAMERA_X_MIN = LUMBRIDGE_TD_MAP_X * 64;
+const PINNED_CAMERA_X_MAX = PINNED_CAMERA_X_MIN + 64;
+const PINNED_CAMERA_Y_MIN = LUMBRIDGE_CASTLE_CAMERA.position[1] - 72;
+const PINNED_CAMERA_Y_MAX = LUMBRIDGE_CASTLE_CAMERA.position[1] + 72;
+const PINNED_CAMERA_Z_MIN = LUMBRIDGE_TD_MAP_Y * 64;
+const PINNED_CAMERA_Z_MAX = PINNED_CAMERA_Z_MIN + 64;
+const PINNED_CAMERA_PITCH_MIN = -512;
+const PINNED_CAMERA_PITCH_MAX = 512;
 
 export class MapViewer {
     inputManager: InputManager = new InputManager();
@@ -69,6 +75,7 @@ export class MapViewer {
     locTypeLoader!: LocTypeLoader;
     objTypeLoader!: ObjTypeLoader;
     npcTypeLoader!: NpcTypeLoader;
+    spotAnimTypeLoader!: SpotAnimTypeLoader;
 
     basTypeLoader!: BasTypeLoader;
 
@@ -226,6 +233,7 @@ export class MapViewer {
         this.locTypeLoader = this.loaderFactory.getLocTypeLoader();
         this.objTypeLoader = this.loaderFactory.getObjTypeLoader();
         this.npcTypeLoader = this.loaderFactory.getNpcTypeLoader();
+        this.spotAnimTypeLoader = this.loaderFactory.getSpotAnimTypeLoader();
         this.basTypeLoader = this.loaderFactory.getBasTypeLoader();
 
         this.varManager = new VarManager(this.loaderFactory.getVarBitTypeLoader());
@@ -298,30 +306,28 @@ export class MapViewer {
         vec3.copy(this.camera.pos, LUMBRIDGE_CASTLE_CAMERA.position);
         this.camera.pitch = LUMBRIDGE_CASTLE_CAMERA.pitch;
         this.camera.yaw = LUMBRIDGE_CASTLE_CAMERA.yaw;
+        this.camera.fov = LUMBRIDGE_CASTLE_CAMERA.fov;
         this.camera.updated = true;
     }
 
     clampPinnedCamera(): void {
         this.camera.pos[0] = Math.max(
-            LUMBRIDGE_CASTLE_CAMERA.position[0] - PINNED_CAMERA_X_RANGE,
-            Math.min(LUMBRIDGE_CASTLE_CAMERA.position[0] + PINNED_CAMERA_X_RANGE, this.camera.pos[0]),
+            PINNED_CAMERA_X_MIN,
+            Math.min(PINNED_CAMERA_X_MAX, this.camera.pos[0]),
         );
         this.camera.pos[1] = Math.max(
-            LUMBRIDGE_CASTLE_CAMERA.position[1] - PINNED_CAMERA_Y_RANGE,
-            Math.min(LUMBRIDGE_CASTLE_CAMERA.position[1] + PINNED_CAMERA_Y_RANGE, this.camera.pos[1]),
+            PINNED_CAMERA_Y_MIN,
+            Math.min(PINNED_CAMERA_Y_MAX, this.camera.pos[1]),
         );
         this.camera.pos[2] = Math.max(
-            LUMBRIDGE_CASTLE_CAMERA.position[2] - PINNED_CAMERA_Z_RANGE,
-            Math.min(LUMBRIDGE_CASTLE_CAMERA.position[2] + PINNED_CAMERA_Z_RANGE, this.camera.pos[2]),
+            PINNED_CAMERA_Z_MIN,
+            Math.min(PINNED_CAMERA_Z_MAX, this.camera.pos[2]),
         );
         this.camera.pitch = Math.max(
-            LUMBRIDGE_CASTLE_CAMERA.pitch - PINNED_CAMERA_PITCH_RANGE,
-            Math.min(LUMBRIDGE_CASTLE_CAMERA.pitch + PINNED_CAMERA_PITCH_RANGE, this.camera.pitch),
+            PINNED_CAMERA_PITCH_MIN,
+            Math.min(PINNED_CAMERA_PITCH_MAX, this.camera.pitch),
         );
-        this.camera.yaw = Math.max(
-            LUMBRIDGE_CASTLE_CAMERA.yaw - PINNED_CAMERA_YAW_RANGE,
-            Math.min(LUMBRIDGE_CASTLE_CAMERA.yaw + PINNED_CAMERA_YAW_RANGE, this.camera.yaw),
-        );
+        this.camera.yaw = ((this.camera.yaw % 2048) + 2048) % 2048;
         this.camera.updated = true;
     }
 
@@ -329,6 +335,7 @@ export class MapViewer {
         vec3.copy(this.camera.pos, LUMBRIDGE_CASTLE_CAMERA.position);
         this.camera.pitch = LUMBRIDGE_CASTLE_CAMERA.pitch;
         this.camera.yaw = LUMBRIDGE_CASTLE_CAMERA.yaw;
+        this.camera.fov = LUMBRIDGE_CASTLE_CAMERA.fov;
         this.camera.updated = true;
     }
 
